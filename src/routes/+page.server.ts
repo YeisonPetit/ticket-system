@@ -7,20 +7,23 @@ import {
 	createTicket,
 	updateTicket,
 	deleteTicket,
-	addComment
+	addComment,
+	takeTicketForValidation,
+	completeTicket,
+	returnTicketToQueue
 } from '$lib/server/db';
 
 export const load: PageServerLoad = async ({ url }) => {
 	const status = url.searchParams.get('status') || 'all';
 	const assigned_to = url.searchParams.get('assigned') || 'all';
-	const priority = url.searchParams.get('priority') || 'all';
-	const category = url.searchParams.get('category') || 'all';
+	const created_by = url.searchParams.get('created_by') || 'all';
+	const complexity = url.searchParams.get('complexity') || 'all';
 	const search = url.searchParams.get('q') || '';
 	const selectedTicketId = url.searchParams.get('ticket')
 		? Number(url.searchParams.get('ticket'))
 		: null;
 
-	const filters = { status, assigned_to, priority, category, search };
+	const filters = { status, assigned_to, created_by, complexity, search };
 	const tickets = getAllTickets(filters);
 	const stats = getStats();
 
@@ -42,50 +45,79 @@ export const actions: Actions = {
 		const data = await request.formData();
 		const title = data.get('title')?.toString()?.trim();
 		const description = data.get('description')?.toString()?.trim() || '';
-		const priority = data.get('priority')?.toString() || 'medium';
-		const category = data.get('category')?.toString() || 'General';
+		const created_by = data.get('created_by')?.toString()?.trim() || 'Yeison';
+		const complexity = (data.get('complexity')?.toString() || 'media') as 'alta' | 'media' | 'baja';
 		const assigned_to = data.get('assigned_to')?.toString() || 'Sin asignar';
-		const status = data.get('status')?.toString() || 'todo';
+		const category = data.get('category')?.toString() || 'General';
 
 		if (!title) {
 			return fail(400, { error: 'El título del ticket es obligatorio.' });
 		}
 
+		if (!description) {
+			return fail(400, { error: 'La descripción del ticket es obligatoria.' });
+		}
+
 		createTicket({
 			title,
 			description,
-			priority,
-			category,
+			created_by,
+			complexity,
 			assigned_to,
-			status
+			category,
+			status: 'queue'
 		});
 
 		return { success: true };
 	},
 
-	updateStatus: async ({ request }) => {
+	takeForValidation: async ({ request }) => {
 		const data = await request.formData();
 		const id = Number(data.get('id'));
-		const status = data.get('status')?.toString() as 'todo' | 'in_progress' | 'review' | 'done';
+		const validatorName = data.get('validatorName')?.toString()?.trim() || 'Julio';
 
-		if (!id || !status) {
-			return fail(400, { error: 'Datos incompletos para actualizar estado.' });
+		if (!id) {
+			return fail(400, { error: 'ID de ticket inválido.' });
 		}
 
-		updateTicket(id, { status });
+		takeTicketForValidation(id, validatorName);
 		return { success: true };
 	},
 
-	updatePriority: async ({ request }) => {
+	complete: async ({ request }) => {
 		const data = await request.formData();
 		const id = Number(data.get('id'));
-		const priority = data.get('priority')?.toString() as 'urgent' | 'high' | 'medium' | 'low';
+		const resolvedBy = data.get('resolvedBy')?.toString()?.trim() || 'Julio';
+		const closingNote = data.get('closingNote')?.toString()?.trim() || '';
 
-		if (!id || !priority) {
-			return fail(400, { error: 'Datos incompletos para actualizar prioridad.' });
+		if (!id) {
+			return fail(400, { error: 'ID de ticket inválido.' });
 		}
 
-		updateTicket(id, { priority });
+		completeTicket(id, resolvedBy, closingNote);
+		return { success: true };
+	},
+
+	returnToQueue: async ({ request }) => {
+		const data = await request.formData();
+		const id = Number(data.get('id'));
+		const returnedBy = data.get('returnedBy')?.toString()?.trim() || 'Julio';
+		const reason = data.get('reason')?.toString()?.trim();
+		const adjustedComplexity = data.get('adjustedComplexity')?.toString() as
+			| 'alta'
+			| 'media'
+			| 'baja'
+			| undefined;
+
+		if (!id) {
+			return fail(400, { error: 'ID de ticket inválido.' });
+		}
+
+		if (!reason) {
+			return fail(400, { error: 'Debes indicar el motivo de la devolución a la cola.' });
+		}
+
+		returnTicketToQueue(id, returnedBy, reason, adjustedComplexity);
 		return { success: true };
 	},
 
@@ -94,10 +126,10 @@ export const actions: Actions = {
 		const id = Number(data.get('id'));
 		const title = data.get('title')?.toString()?.trim();
 		const description = data.get('description')?.toString()?.trim();
-		const priority = data.get('priority')?.toString() as 'urgent' | 'high' | 'medium' | 'low';
-		const category = data.get('category')?.toString();
+		const created_by = data.get('created_by')?.toString()?.trim();
+		const complexity = data.get('complexity')?.toString() as 'alta' | 'media' | 'baja';
 		const assigned_to = data.get('assigned_to')?.toString();
-		const status = data.get('status')?.toString() as 'todo' | 'in_progress' | 'review' | 'done';
+		const status = data.get('status')?.toString() as 'queue' | 'in_validation' | 'completed';
 
 		if (!id || !title) {
 			return fail(400, { error: 'El título y el ID son obligatorios.' });
@@ -106,8 +138,8 @@ export const actions: Actions = {
 		updateTicket(id, {
 			title,
 			description,
-			priority,
-			category,
+			created_by,
+			complexity,
 			assigned_to,
 			status
 		});
