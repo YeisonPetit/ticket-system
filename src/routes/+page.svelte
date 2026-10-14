@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
+	import { invalidateAll } from '$app/navigation';
 	import type { PageData } from './$types';
+	import type { Ticket } from '$lib/server/db';
 
 	let { data }: { data: PageData } = $props();
 
@@ -30,15 +32,46 @@
 	let searchQuery = $state('');
 	let filterCreatedBy = $state('all');
 	let filterComplexity = $state('all');
-	let filterAssigned = $state('all');
+	let searchInputElement = $state<HTMLInputElement | null>(null);
+
+	// Drag & Drop State
+	let draggedTicket = $state<Ticket | null>(null);
+	let activeDropCol = $state<string | null>(null);
+	let isSubmittingMove = $state(false);
 
 	$effect(() => {
 		if (data.filters.search) searchQuery = data.filters.search;
 		if (data.filters.created_by) filterCreatedBy = data.filters.created_by;
 		if (data.filters.complexity) filterComplexity = data.filters.complexity;
-		if (data.filters.assigned_to) filterAssigned = data.filters.assigned_to;
 		if (data.selectedTicket?.ticket?.id) activeTicketId = data.selectedTicket.ticket.id;
 	});
+
+	// Global Keyboard Shortcuts (Anti-Jira speed)
+	function handleKeydown(e: KeyboardEvent) {
+		if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+			if (e.key === 'Escape') {
+				(e.target as HTMLElement).blur();
+				closeTicketModal();
+				showCreateModal = false;
+				returnModalTicketId = null;
+				completeModalTicketId = null;
+			}
+			return;
+		}
+
+		if (e.key === 'n' || e.key === 'N') {
+			e.preventDefault();
+			showCreateModal = true;
+		} else if (e.key === '/') {
+			e.preventDefault();
+			searchInputElement?.focus();
+		} else if (e.key === 'Escape') {
+			closeTicketModal();
+			showCreateModal = false;
+			returnModalTicketId = null;
+			completeModalTicketId = null;
+		}
+	}
 
 	// Derived selected ticket
 	let activeTicket = $derived(
@@ -56,9 +89,8 @@
 
 			const matchesCreatedBy = filterCreatedBy === 'all' || t.created_by === filterCreatedBy;
 			const matchesComplexity = filterComplexity === 'all' || t.complexity === filterComplexity;
-			const matchesAssigned = filterAssigned === 'all' || t.assigned_to === filterAssigned;
 
-			return matchesSearch && matchesCreatedBy && matchesComplexity && matchesAssigned;
+			return matchesSearch && matchesCreatedBy && matchesComplexity;
 		})
 	);
 
@@ -67,49 +99,46 @@
 	let completedTickets = $derived(visibleTickets.filter((t) => t.status === 'completed'));
 
 	const teamMembers = [
-		{ name: 'Yeison', role: 'Dev Lead', color: 'bg-blue-600', border: 'border-blue-400' },
-		{ name: 'Julio', role: 'Product / Tech', color: 'bg-purple-600', border: 'border-purple-400' },
-		{ name: 'Domingo', role: 'Operations', color: 'bg-emerald-600', border: 'border-emerald-400' }
+		{ name: 'Yeison', role: 'Dev Lead', color: 'bg-indigo-500' },
+		{ name: 'Julio', role: 'Product / Tech', color: 'bg-violet-500' },
+		{ name: 'Domingo', role: 'Operations', color: 'bg-emerald-500' }
 	];
 
 	const quickReasons = [
-		'Faltan especificaciones o requerimientos claros',
-		'Rechazado en pruebas: requiere corrección de errores',
-		'Pendiente de validación con el usuario solicitante',
-		'Ajustar diseño o formato según estándares'
+		'Faltan requerimientos o criterios claros',
+		'Rechazado en pruebas: requiere corrección',
+		'Validación pendiente con el cliente',
+		'Ajustar diseño según especificaciones'
 	];
 
 	function getComplexityConfig(comp: string) {
 		switch (comp) {
 			case 'alta':
 				return {
-					label: 'Alta Complejidad',
 					shortLabel: 'Alta',
-					dotClass: 'bg-rose-500 shadow-rose-400/50',
-					badgeClass: 'bg-rose-50 text-rose-700 border-rose-200'
+					dotClass: 'bg-rose-400 shadow-rose-500/50',
+					badgeClass: 'bg-rose-500/10 text-rose-300 border-rose-500/30'
 				};
 			case 'media':
 				return {
-					label: 'Media Complejidad',
 					shortLabel: 'Media',
-					dotClass: 'bg-amber-500 shadow-amber-400/50',
-					badgeClass: 'bg-amber-50 text-amber-700 border-amber-200'
+					dotClass: 'bg-amber-400 shadow-amber-500/50',
+					badgeClass: 'bg-amber-500/10 text-amber-300 border-amber-500/30'
 				};
 			default:
 				return {
-					label: 'Baja Complejidad',
 					shortLabel: 'Baja',
-					dotClass: 'bg-emerald-500 shadow-emerald-400/50',
-					badgeClass: 'bg-emerald-50 text-emerald-700 border-emerald-200'
+					dotClass: 'bg-emerald-400 shadow-emerald-500/50',
+					badgeClass: 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
 				};
 		}
 	}
 
 	function getAvatarColor(name: string) {
-		if (name.includes('Julio')) return 'bg-purple-600 text-white ring-purple-100';
-		if (name.includes('Domingo')) return 'bg-emerald-600 text-white ring-emerald-100';
-		if (name.includes('Yeison')) return 'bg-blue-600 text-white ring-blue-100';
-		return 'bg-slate-500 text-white ring-slate-100';
+		if (name.includes('Julio')) return 'bg-violet-500 text-white';
+		if (name.includes('Domingo')) return 'bg-emerald-500 text-white';
+		if (name.includes('Yeison')) return 'bg-indigo-500 text-white';
+		return 'bg-slate-600 text-white';
 	}
 
 	function openTicket(id: number) {
@@ -136,40 +165,115 @@
 		completeModalTicketId = id;
 		completeNote = '';
 	}
+
+	// ─── DRAG AND DROP HANDLERS ──────────────────────────────────────
+	function onDragStart(e: DragEvent, ticket: Ticket) {
+		draggedTicket = ticket;
+		if (e.dataTransfer) {
+			e.dataTransfer.effectAllowed = 'move';
+			e.dataTransfer.setData('text/plain', ticket.id.toString());
+		}
+	}
+
+	function onDragEnd() {
+		draggedTicket = null;
+		activeDropCol = null;
+	}
+
+	function onDragOver(e: DragEvent, colId: string) {
+		e.preventDefault();
+		if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+		if (activeDropCol !== colId) {
+			activeDropCol = colId;
+		}
+	}
+
+	function onDragLeave(colId: string) {
+		if (activeDropCol === colId) {
+			activeDropCol = null;
+		}
+	}
+
+	async function onDrop(e: DragEvent, targetCol: 'queue' | 'in_validation' | 'completed') {
+		e.preventDefault();
+		activeDropCol = null;
+
+		if (!draggedTicket || draggedTicket.status === targetCol) {
+			draggedTicket = null;
+			return;
+		}
+
+		const movingTicket = draggedTicket;
+		draggedTicket = null;
+
+		// Si se arrastra de vuelta a la cola desde validación, solicitar motivo con modal
+		if (movingTicket.status === 'in_validation' && targetCol === 'queue') {
+			openReturnModal(movingTicket.id, movingTicket.complexity);
+			return;
+		}
+
+		// Ejecutar cambio de estado rápido
+		isSubmittingMove = true;
+		const formData = new FormData();
+		formData.append('id', movingTicket.id.toString());
+		formData.append('targetStatus', targetCol);
+		formData.append('actor', 'Julio');
+
+		try {
+			await fetch('?/dragMove', {
+				method: 'POST',
+				body: formData
+			});
+			await invalidateAll();
+		} catch (err) {
+			console.error('Error al mover ticket:', err);
+		} finally {
+			isSubmittingMove = false;
+		}
+	}
 </script>
 
+<svelte:window onkeydown={handleKeydown} />
+
 <svelte:head>
-	<title>TicketSystem — Cola Ágil y Salida de Tareas</title>
+	<title>PULSE — Queue & Dispatch Engine</title>
 </svelte:head>
 
-<div class="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-indigo-500 selection:text-white">
+<div class="min-h-screen bg-[#090d16] text-slate-100 flex flex-col font-sans selection:bg-indigo-500 selection:text-white antialiased">
 	
-	<!-- NAVBAR PREMIUM LINEAR-STYLE -->
-	<header class="bg-slate-900/95 backdrop-blur-md border-b border-slate-800 sticky top-0 z-30 shadow-lg">
+	<!-- TOP APP BAR -->
+	<header class="bg-[#0d1322]/90 backdrop-blur-xl border-b border-white/5 sticky top-0 z-30 shadow-2xl">
 		<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex items-center justify-between gap-4">
 			
-			<!-- Logo y Título -->
+			<!-- Brand: PULSE -->
 			<div class="flex items-center gap-3">
-				<div class="h-9 w-9 rounded-xl bg-gradient-to-br from-indigo-500 via-indigo-600 to-violet-700 flex items-center justify-center font-black text-white text-base shadow-md shadow-indigo-500/25 ring-1 ring-white/20">
-					TS
+				<div class="relative flex items-center justify-center">
+					<div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-indigo-500 via-indigo-600 to-sky-400 flex items-center justify-center shadow-lg shadow-indigo-500/30 ring-1 ring-white/20">
+						<svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M13 10V3L4 14h7v7l9-11h-7z" />
+						</svg>
+					</div>
+					<span class="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-400 ring-2 ring-[#0d1322]"></span>
 				</div>
 				<div>
 					<div class="flex items-center gap-2">
-						<span class="font-extrabold text-sm sm:text-base tracking-tight text-white">TicketSystem</span>
-						<span class="text-[10px] font-bold uppercase tracking-wider bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 px-2 py-0.5 rounded-full">
-							Cola & Salida
+						<span class="font-black text-lg tracking-wider text-transparent bg-clip-text bg-gradient-to-r from-white via-slate-100 to-slate-400">
+							PULSE
+						</span>
+						<span class="text-[9px] font-mono font-bold tracking-widest text-indigo-400 bg-indigo-500/10 border border-indigo-500/25 px-2 py-0.5 rounded-md uppercase">
+							DISPATCH OS
 						</span>
 					</div>
-					<p class="text-[11px] text-slate-400">Flujo ágil de cola por complejidad y validación</p>
+					<p class="text-[11px] text-slate-400">Motor de cola y despacho por complejidad</p>
 				</div>
 			</div>
 
-			<!-- Filtros Rápidos por Miembro (Avatares interactivos) -->
-			<div class="hidden md:flex items-center gap-1.5 bg-slate-800/80 p-1 rounded-xl border border-slate-700/60">
+			<!-- Team Filter Pills (Fast toggle) -->
+			<div class="hidden md:flex items-center gap-1.5 bg-white/[0.03] p-1 rounded-xl border border-white/[0.08]">
 				<button
 					type="button"
 					onclick={() => (filterCreatedBy = 'all')}
-					class="px-2.5 py-1 text-xs font-semibold rounded-lg transition-all {filterCreatedBy === 'all' ? 'bg-indigo-600 text-white shadow-xs' : 'text-slate-400 hover:text-white'}"
+					class="px-2.5 py-1 text-xs font-semibold rounded-lg transition-all {filterCreatedBy === 'all' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'}"
 				>
 					Todos
 				</button>
@@ -177,9 +281,9 @@
 					<button
 						type="button"
 						onclick={() => (filterCreatedBy = filterCreatedBy === member.name ? 'all' : member.name)}
-						class="flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium transition-all {filterCreatedBy === member.name ? 'bg-slate-700 text-white ring-1 ring-indigo-400' : 'text-slate-400 hover:text-white hover:bg-slate-700/50'}"
+						class="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium transition-all {filterCreatedBy === member.name ? 'bg-white/10 text-white ring-1 ring-white/20' : 'text-slate-400 hover:text-white hover:bg-white/[0.04]'}"
 					>
-						<span class="w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-bold text-white {member.color}">
+						<span class="w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-black text-white {member.color}">
 							{member.name.charAt(0)}
 						</span>
 						<span>{member.name}</span>
@@ -187,122 +291,123 @@
 				{/each}
 			</div>
 
-			<!-- Botones de Acción -->
+			<!-- Actions & Controls -->
 			<div class="flex items-center gap-3">
-				<!-- Switcher de Vista -->
-				<div class="bg-slate-800/80 p-0.5 rounded-xl border border-slate-700/60 flex text-xs font-medium">
+				<!-- Switcher Vista -->
+				<div class="bg-white/[0.04] p-0.5 rounded-xl border border-white/[0.08] flex text-xs">
 					<button
 						type="button"
 						onclick={() => (currentView = 'workflow')}
-						class="px-3 py-1.5 rounded-lg transition-all flex items-center gap-1.5 {currentView === 'workflow' ? 'bg-slate-700 text-white font-semibold shadow-xs' : 'text-slate-400 hover:text-white'}"
+						class="px-3 py-1.5 rounded-lg transition-all flex items-center gap-1.5 {currentView === 'workflow' ? 'bg-white/10 text-white font-semibold' : 'text-slate-400 hover:text-white'}"
 					>
 						<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 							<rect x="3" y="3" width="7" height="18" rx="1.5" stroke-width="2" />
 							<rect x="14" y="3" width="7" height="18" rx="1.5" stroke-width="2" />
 						</svg>
-						<span class="hidden sm:inline">Flujo Visual</span>
+						<span class="hidden sm:inline">Tablero Drag & Drop</span>
 					</button>
 					<button
 						type="button"
 						onclick={() => (currentView = 'queue_list')}
-						class="px-3 py-1.5 rounded-lg transition-all flex items-center gap-1.5 {currentView === 'queue_list' ? 'bg-slate-700 text-white font-semibold shadow-xs' : 'text-slate-400 hover:text-white'}"
+						class="px-3 py-1.5 rounded-lg transition-all flex items-center gap-1.5 {currentView === 'queue_list' ? 'bg-white/10 text-white font-semibold' : 'text-slate-400 hover:text-white'}"
 					>
 						<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 							<line x1="4" y1="6" x2="20" y2="6" stroke-width="2" stroke-linecap="round" />
 							<line x1="4" y1="12" x2="20" y2="12" stroke-width="2" stroke-linecap="round" />
 							<line x1="4" y1="18" x2="20" y2="18" stroke-width="2" stroke-linecap="round" />
 						</svg>
-						<span class="hidden sm:inline">Lista de Cola</span>
+						<span class="hidden sm:inline">Lista Estricta</span>
 					</button>
 				</div>
 
-				<!-- Botón Registrar Ticket -->
+				<!-- Quick Add Ticket -->
 				<button
 					type="button"
 					onclick={() => (showCreateModal = true)}
-					class="inline-flex items-center gap-1.5 bg-gradient-to-r from-indigo-500 via-indigo-600 to-violet-600 hover:from-indigo-600 hover:to-violet-700 text-white font-semibold text-xs sm:text-sm px-3.5 py-2 rounded-xl shadow-lg shadow-indigo-500/25 border border-indigo-400/30 transition-all hover:scale-[1.02] active:scale-[0.98]"
+					class="group inline-flex items-center gap-2 bg-gradient-to-r from-indigo-500 via-indigo-600 to-sky-500 hover:from-indigo-600 hover:to-sky-600 text-white font-semibold text-xs sm:text-sm px-3.5 py-2 rounded-xl shadow-lg shadow-indigo-500/20 border border-white/20 transition-all hover:scale-[1.02] active:scale-[0.98]"
 				>
-					<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+					<svg class="w-4 h-4 transition-transform group-hover:rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 4v16m8-8H4" />
 					</svg>
-					<span>Registrar Ticket</span>
+					<span>Nuevo</span>
+					<kbd class="hidden sm:inline-block px-1.5 py-0.5 text-[9px] font-mono bg-black/30 rounded border border-white/20 text-white/80">N</kbd>
 				</button>
 			</div>
 		</div>
 	</header>
 
-	<!-- DASHBOARD EXECUTIVE METRICS -->
-	<section class="bg-slate-900 border-b border-slate-800">
-		<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+	<!-- LIVE QUEUE PULSE HERO BAR -->
+	<section class="bg-[#0b101c] border-b border-white/[0.06] relative overflow-hidden">
+		<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3.5">
 			<div class="grid grid-cols-2 md:grid-cols-4 gap-3">
 				
-				<!-- Métrica 1: En Cola -->
-				<div class="bg-slate-800/60 rounded-2xl p-3.5 border border-amber-500/30 shadow-xs relative overflow-hidden group hover:border-amber-500/60 transition-all">
-					<div class="absolute -right-3 -top-3 w-16 h-16 bg-amber-500/10 rounded-full blur-xl pointer-events-none"></div>
-					<div class="flex items-center justify-between mb-1.5">
-						<span class="text-xs font-semibold uppercase tracking-wider text-amber-400 flex items-center gap-1.5">
-							<span class="w-2 h-2 rounded-full bg-amber-400 animate-ping"></span>
-							En Cola
-						</span>
-						<span class="text-[11px] font-mono text-slate-400">Esperando turno</span>
+				<!-- Live Queue -->
+				<div class="bg-white/[0.02] hover:bg-white/[0.04] p-3 rounded-2xl border border-white/[0.07] transition-all flex items-center justify-between">
+					<div>
+						<div class="text-[10px] font-mono uppercase tracking-wider text-amber-400/90 font-bold flex items-center gap-1.5 mb-0.5">
+							<span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping"></span>
+							Cola de Espera
+						</div>
+						<div class="text-xl sm:text-2xl font-black font-mono text-white tracking-tight">
+							{data.stats.queue} <span class="text-xs font-normal text-slate-400">tickets</span>
+						</div>
 					</div>
-					<div class="flex items-baseline gap-2">
-						<span class="text-2xl sm:text-3xl font-extrabold text-white tracking-tight font-mono">{data.stats.queue}</span>
-						<span class="text-[11px] text-amber-300 font-medium">
-							({data.stats.highComplexity} de alta complejidad)
+					<div class="text-right">
+						<span class="text-[10px] font-mono font-bold px-2 py-0.5 rounded-md bg-rose-500/10 text-rose-300 border border-rose-500/20">
+							{data.stats.highComplexity} Alta
 						</span>
 					</div>
 				</div>
 
-				<!-- Métrica 2: En Validación -->
-				<div class="bg-slate-800/60 rounded-2xl p-3.5 border border-blue-500/30 shadow-xs relative overflow-hidden group hover:border-blue-500/60 transition-all">
-					<div class="absolute -right-3 -top-3 w-16 h-16 bg-blue-500/10 rounded-full blur-xl pointer-events-none"></div>
-					<div class="flex items-center justify-between mb-1.5">
-						<span class="text-xs font-semibold uppercase tracking-wider text-blue-400 flex items-center gap-1.5">
-							<span class="w-2 h-2 rounded-full bg-blue-400"></span>
+				<!-- Mesa de Validación -->
+				<div class="bg-white/[0.02] hover:bg-white/[0.04] p-3 rounded-2xl border border-white/[0.07] transition-all flex items-center justify-between">
+					<div>
+						<div class="text-[10px] font-mono uppercase tracking-wider text-sky-400 font-bold flex items-center gap-1.5 mb-0.5">
+							<span class="w-1.5 h-1.5 rounded-full bg-sky-400"></span>
 							En Validación
-						</span>
-						<span class="text-[11px] font-mono text-slate-400">En revisión</span>
+						</div>
+						<div class="text-xl sm:text-2xl font-black font-mono text-white tracking-tight">
+							{data.stats.inValidation} <span class="text-xs font-normal text-slate-400">activas</span>
+						</div>
 					</div>
-					<div class="flex items-baseline gap-2">
-						<span class="text-2xl sm:text-3xl font-extrabold text-white tracking-tight font-mono">{data.stats.inValidation}</span>
-						<span class="text-[11px] text-blue-300 font-medium">Mesa de trabajo</span>
+					<div class="text-[10px] text-slate-400 font-mono">
+						Revisando
 					</div>
 				</div>
 
-				<!-- Métrica 3: Devueltos a la cola -->
-				<div class="bg-slate-800/60 rounded-2xl p-3.5 border border-rose-500/30 shadow-xs relative overflow-hidden group hover:border-rose-500/60 transition-all">
-					<div class="absolute -right-3 -top-3 w-16 h-16 bg-rose-500/10 rounded-full blur-xl pointer-events-none"></div>
-					<div class="flex items-center justify-between mb-1.5">
-						<span class="text-xs font-semibold uppercase tracking-wider text-rose-400 flex items-center gap-1.5">
-							<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+				<!-- Devoluciones / Retornos -->
+				<div class="bg-white/[0.02] hover:bg-white/[0.04] p-3 rounded-2xl border border-white/[0.07] transition-all flex items-center justify-between">
+					<div>
+						<div class="text-[10px] font-mono uppercase tracking-wider text-rose-400 font-bold flex items-center gap-1.5 mb-0.5">
+							<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
 							</svg>
-							Devoluciones
-						</span>
-						<span class="text-[11px] font-mono text-slate-400">Reintentos</span>
+							Retornados
+						</div>
+						<div class="text-xl sm:text-2xl font-black font-mono text-rose-300 tracking-tight">
+							{data.stats.returnedTotal} <span class="text-xs font-normal text-slate-400">reintentos</span>
+						</div>
 					</div>
-					<div class="flex items-baseline gap-2">
-						<span class="text-2xl sm:text-3xl font-extrabold text-white tracking-tight font-mono">{data.stats.returnedTotal}</span>
-						<span class="text-[11px] text-rose-300 font-medium">Requerían ajustes</span>
+					<div class="text-[10px] text-slate-400 font-mono">
+						Ajustes
 					</div>
 				</div>
 
-				<!-- Métrica 4: Salidas Completadas -->
-				<div class="bg-slate-800/60 rounded-2xl p-3.5 border border-emerald-500/30 shadow-xs relative overflow-hidden group hover:border-emerald-500/60 transition-all">
-					<div class="absolute -right-3 -top-3 w-16 h-16 bg-emerald-500/10 rounded-full blur-xl pointer-events-none"></div>
-					<div class="flex items-center justify-between mb-1.5">
-						<span class="text-xs font-semibold uppercase tracking-wider text-emerald-400 flex items-center gap-1.5">
-							<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+				<!-- Completados / Con Salida -->
+				<div class="bg-white/[0.02] hover:bg-white/[0.04] p-3 rounded-2xl border border-white/[0.07] transition-all flex items-center justify-between">
+					<div>
+						<div class="text-[10px] font-mono uppercase tracking-wider text-emerald-400 font-bold flex items-center gap-1.5 mb-0.5">
+							<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7" />
 							</svg>
 							Con Salida
-						</span>
-						<span class="text-[11px] font-mono text-slate-400">Completados</span>
+						</div>
+						<div class="text-xl sm:text-2xl font-black font-mono text-emerald-400 tracking-tight">
+							{data.stats.completed} <span class="text-xs font-normal text-slate-400">resueltos</span>
+						</div>
 					</div>
-					<div class="flex items-baseline gap-2">
-						<span class="text-2xl sm:text-3xl font-extrabold text-white tracking-tight font-mono">{data.stats.completed}</span>
-						<span class="text-[11px] text-emerald-300 font-medium">Aprobados con éxito</span>
+					<div class="text-[10px] text-emerald-400/80 font-mono">
+						100% Salida
 					</div>
 				</div>
 
@@ -310,62 +415,63 @@
 		</div>
 	</section>
 
-	<!-- SEARCH AND COMPLEXITY FILTER BAR -->
-	<section class="bg-slate-900/60 border-b border-slate-800">
+	<!-- QUICK FILTER & COMMAND BAR -->
+	<section class="bg-[#090d16]/80 border-b border-white/[0.06]">
 		<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2.5 flex flex-wrap items-center gap-3">
 			
-			<!-- Input de Búsqueda -->
-			<div class="relative flex-1 min-w-[220px]">
-				<svg class="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+			<!-- Fast Search with hotkey tip -->
+			<div class="relative flex-1 min-w-[200px]">
+				<svg class="w-3.5 h-3.5 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
 				</svg>
 				<input
+					bind:this={searchInputElement}
 					type="text"
 					bind:value={searchQuery}
-					placeholder="Buscar por título, contenido o persona..."
-					class="w-full pl-10 pr-4 py-1.5 text-xs bg-slate-800/80 border border-slate-700 rounded-xl text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all"
+					placeholder="Buscar solicitud o creador..."
+					class="w-full pl-9 pr-9 py-1.5 text-xs bg-white/[0.03] border border-white/[0.08] rounded-xl text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:bg-white/[0.06] transition-all"
 				/>
+				<kbd class="hidden sm:inline-block absolute right-2.5 top-1/2 -translate-y-1/2 px-1.5 py-0.5 text-[9px] font-mono bg-white/[0.05] rounded text-slate-400 border border-white/[0.1]">
+					/
+				</kbd>
 			</div>
 
-			<!-- Filtro Complejidad en Pills -->
-			<div class="flex items-center gap-1.5 text-xs">
-				<span class="text-slate-400 font-medium text-[11px]">Complejidad:</span>
-				<div class="bg-slate-800/80 p-0.5 rounded-xl border border-slate-700 flex text-xs">
-					<button
-						type="button"
-						onclick={() => (filterComplexity = 'all')}
-						class="px-2.5 py-1 rounded-lg transition-colors {filterComplexity === 'all' ? 'bg-slate-700 text-white font-semibold' : 'text-slate-400 hover:text-white'}"
-					>
-						Todas
-					</button>
-					<button
-						type="button"
-						onclick={() => (filterComplexity = 'alta')}
-						class="px-2 py-1 rounded-lg transition-colors flex items-center gap-1 {filterComplexity === 'alta' ? 'bg-rose-500/20 text-rose-300 font-semibold' : 'text-slate-400 hover:text-rose-300'}"
-					>
-						<span class="w-1.5 h-1.5 rounded-full bg-rose-500"></span>
-						Alta
-					</button>
-					<button
-						type="button"
-						onclick={() => (filterComplexity = 'media')}
-						class="px-2 py-1 rounded-lg transition-colors flex items-center gap-1 {filterComplexity === 'media' ? 'bg-amber-500/20 text-amber-300 font-semibold' : 'text-slate-400 hover:text-amber-300'}"
-					>
-						<span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
-						Media
-					</button>
-					<button
-						type="button"
-						onclick={() => (filterComplexity = 'baja')}
-						class="px-2 py-1 rounded-lg transition-colors flex items-center gap-1 {filterComplexity === 'baja' ? 'bg-emerald-500/20 text-emerald-300 font-semibold' : 'text-slate-400 hover:text-emerald-300'}"
-					>
-						<span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-						Baja
-					</button>
-				</div>
+			<!-- Complexity Chips -->
+			<div class="flex items-center gap-1 text-xs">
+				<button
+					type="button"
+					onclick={() => (filterComplexity = 'all')}
+					class="px-2.5 py-1 rounded-lg text-xs font-medium transition-colors {filterComplexity === 'all' ? 'bg-white/10 text-white' : 'text-slate-400 hover:text-white'}"
+				>
+					Todas
+				</button>
+				<button
+					type="button"
+					onclick={() => (filterComplexity = 'alta')}
+					class="px-2.5 py-1 rounded-lg text-xs font-medium transition-colors flex items-center gap-1.5 {filterComplexity === 'alta' ? 'bg-rose-500/20 text-rose-300 ring-1 ring-rose-500/30' : 'text-slate-400 hover:text-rose-300'}"
+				>
+					<span class="w-1.5 h-1.5 rounded-full bg-rose-400"></span>
+					Alta
+				</button>
+				<button
+					type="button"
+					onclick={() => (filterComplexity = 'media')}
+					class="px-2.5 py-1 rounded-lg text-xs font-medium transition-colors flex items-center gap-1.5 {filterComplexity === 'media' ? 'bg-amber-500/20 text-amber-300 ring-1 ring-amber-500/30' : 'text-slate-400 hover:text-amber-300'}"
+				>
+					<span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+					Media
+				</button>
+				<button
+					type="button"
+					onclick={() => (filterComplexity = 'baja')}
+					class="px-2.5 py-1 rounded-lg text-xs font-medium transition-colors flex items-center gap-1.5 {filterComplexity === 'baja' ? 'bg-emerald-500/20 text-emerald-300 ring-1 ring-emerald-500/30' : 'text-slate-400 hover:text-emerald-300'}"
+				>
+					<span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+					Baja
+				</button>
 			</div>
 
-			<!-- Reset Filter -->
+			<!-- Reset -->
 			{#if searchQuery || filterCreatedBy !== 'all' || filterComplexity !== 'all'}
 				<button
 					type="button"
@@ -382,281 +488,293 @@
 		</div>
 	</section>
 
-	<!-- MAIN WORKSPACE -->
+	<!-- MAIN KANBAN WITH DRAG & DROP -->
 	<main class="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8">
 		{#if visibleTickets.length === 0}
-			<div class="bg-slate-900 rounded-3xl border border-dashed border-slate-800 p-16 text-center max-w-md mx-auto my-12 shadow-xl">
-				<div class="w-14 h-14 rounded-2xl bg-indigo-500/10 text-indigo-400 flex items-center justify-center mx-auto mb-4 ring-1 ring-indigo-500/20">
-					<svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+			<div class="bg-white/[0.02] rounded-3xl border border-dashed border-white/10 p-16 text-center max-w-md mx-auto my-12">
+				<div class="w-12 h-12 rounded-2xl bg-indigo-500/10 text-indigo-400 flex items-center justify-center mx-auto mb-3 ring-1 ring-indigo-500/20">
+					<svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
 					</svg>
 				</div>
-				<h3 class="text-base font-bold text-white">No hay tickets que mostrar</h3>
-				<p class="text-xs text-slate-400 mt-1 mb-6">No se encontraron solicitudes con los filtros aplicados o la cola está vacía.</p>
+				<h3 class="text-sm font-bold text-white">No hay tickets activos</h3>
+				<p class="text-xs text-slate-400 mt-1 mb-5">Presiona la tecla <kbd class="px-1.5 py-0.5 rounded bg-white/10 font-mono text-white text-[10px]">N</kbd> para registrar un ticket.</p>
 				<button
 					type="button"
 					onclick={() => (showCreateModal = true)}
-					class="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold px-4 py-2.5 rounded-xl shadow-lg transition-all"
+					class="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold px-4 py-2 rounded-xl transition-all"
 				>
-					Registrar primer ticket
+					Crear Solicitud
 				</button>
 			</div>
 		{:else if currentView === 'workflow'}
-			<!-- VISTA DE FLUJO: COLA -> VALIDACIÓN -> SALIDA -->
-			<div class="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
+			<!-- 3 COLUMNAS INTERACTIVAS CON DRAG & DROP -->
+			<div class="grid grid-cols-1 lg:grid-cols-3 gap-5 items-start">
 				
-				<!-- COLUMNA 1: COLA DE SOLICITUDES -->
-				<div class="bg-slate-900/80 rounded-3xl p-4 sm:p-5 border border-amber-500/20 shadow-xl flex flex-col min-h-[600px] backdrop-blur-xs">
-					
-					<!-- Header de la Cola -->
-					<div class="flex items-center justify-between pb-3.5 mb-4 border-b border-slate-800">
-						<div class="flex items-center gap-2.5">
-							<span class="flex h-2.5 w-2.5 relative">
-								<span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
-								<span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-amber-500"></span>
-							</span>
-							<div>
-								<h2 class="font-extrabold text-xs uppercase tracking-wider text-amber-300">Cola de Espera</h2>
-								<p class="text-[10px] text-slate-400">Orden estricto por complejidad</p>
-							</div>
+				<!-- COLUMNA 1: COLA DE ESPERA -->
+				<!-- svelte-ignore a11y_no_static_element_interactions -->
+				<div
+					ondragover={(e) => onDragOver(e, 'queue')}
+					ondragleave={() => onDragLeave('queue')}
+					ondrop={(e) => onDrop(e, 'queue')}
+					class="rounded-3xl p-4 transition-all flex flex-col min-h-[580px] {activeDropCol === 'queue' ? 'ring-2 ring-amber-400 bg-amber-500/10 border-amber-400/50' : 'bg-white/[0.02] border border-white/[0.07]'}"
+				>
+					<!-- Header de la Columna -->
+					<div class="flex items-center justify-between pb-3 mb-3 border-b border-white/[0.06]">
+						<div class="flex items-center gap-2">
+							<span class="w-2 h-2 rounded-full bg-amber-400"></span>
+							<h2 class="font-bold text-xs uppercase tracking-wider text-slate-200">Cola de Espera</h2>
 						</div>
-						<span class="bg-amber-500/10 text-amber-300 border border-amber-500/30 text-xs px-2.5 py-0.5 rounded-full font-mono font-bold">
-							{queueTickets.length} en fila
+						<span class="font-mono text-xs font-bold px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30">
+							{queueTickets.length}
 						</span>
 					</div>
 
-					<!-- Lista de Cards en la Cola -->
-					<div class="space-y-3.5 flex-1">
+					<!-- Lista de Cards -->
+					<div class="space-y-3 flex-1">
 						{#each queueTickets as ticket, idx (ticket.id)}
 							{@const comp = getComplexityConfig(ticket.complexity)}
-							<div class="bg-slate-800/90 rounded-2xl p-4 border border-slate-700/80 shadow-md hover:border-amber-400/60 hover:shadow-amber-500/5 transition-all group flex flex-col justify-between">
-								<div>
-									<!-- Turno & Complejidad -->
-									<div class="flex items-center justify-between gap-2 mb-2.5">
-										<div class="flex items-center gap-1.5">
-											<span class="font-mono text-xs font-black px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-300 border border-amber-500/30">
-												TURNO #{idx + 1}
-											</span>
-											<span class="text-[10px] font-mono text-slate-500">#{ticket.id}</span>
-										</div>
-										<span class="inline-flex items-center gap-1.5 text-[10px] font-semibold px-2 py-0.5 rounded-full border {comp.badgeClass}">
-											<span class="w-1.5 h-1.5 rounded-full {comp.dotClass}"></span>
-											{comp.shortLabel}
+							<!-- svelte-ignore a11y_no_static_element_interactions -->
+							<div
+								draggable="true"
+								ondragstart={(e) => onDragStart(e, ticket)}
+								ondragend={onDragEnd}
+								class="bg-[#121929]/95 rounded-2xl p-4 border border-white/[0.08] shadow-md hover:border-amber-400/40 hover:shadow-xl hover:shadow-amber-500/5 transition-all group cursor-grab active:cursor-grabbing {draggedTicket?.id === ticket.id ? 'opacity-40 scale-95' : ''}"
+							>
+								<!-- Top Card Bar con Grip de Arrastre -->
+								<div class="flex items-center justify-between gap-2 mb-2">
+									<div class="flex items-center gap-2">
+										<span class="text-slate-500 group-hover:text-slate-300 transition-colors" title="Arrastra para mover a otra columna">
+											<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+												<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8h16M4 16h16" />
+											</svg>
+										</span>
+										<span class="font-mono text-xs font-black text-amber-300 bg-amber-500/15 px-2 py-0.5 rounded border border-amber-500/30">
+											TURNO #{idx + 1}
 										</span>
 									</div>
-
-									<!-- Título -->
-									<button
-										type="button"
-										onclick={() => openTicket(ticket.id)}
-										class="text-left font-bold text-xs sm:text-sm text-white group-hover:text-amber-300 transition-colors w-full line-clamp-2 mb-1.5"
-									>
-										{ticket.title}
-									</button>
-
-									<!-- Descripción -->
-									<p class="text-[11px] text-slate-400 line-clamp-2 mb-3 bg-slate-900/60 p-2.5 rounded-xl border border-slate-800 leading-relaxed">
-										{ticket.description}
-									</p>
-
-									<!-- Badge de Devolución -->
-									{#if ticket.return_count > 0}
-										<div class="mb-3 p-2.5 bg-rose-500/10 border border-rose-500/30 rounded-xl text-[11px] text-rose-300">
-											<div class="flex items-center gap-1.5 font-bold mb-0.5">
-												<svg class="w-3.5 h-3.5 text-rose-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-													<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
-												</svg>
-												<span>Devuelto {ticket.return_count} {ticket.return_count === 1 ? 'vez' : 'veces'} a la cola</span>
-											</div>
-											<p class="text-[10px] text-rose-200/90 italic pl-5">"{ticket.return_reason}"</p>
-										</div>
-									{/if}
+									<span class="inline-flex items-center gap-1.5 text-[10px] font-semibold px-2 py-0.5 rounded-full border {comp.badgeClass}">
+										<span class="w-1.5 h-1.5 rounded-full {comp.dotClass}"></span>
+										{comp.shortLabel}
+									</span>
 								</div>
 
-								<!-- Pie de Card -->
-								<div class="pt-3 border-t border-slate-700/60 flex items-center justify-between mt-2">
-									<div class="flex items-center gap-2">
-										<div class="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ring-1 {getAvatarColor(ticket.created_by)}">
+								<!-- Título -->
+								<button
+									type="button"
+									onclick={() => openTicket(ticket.id)}
+									class="text-left font-bold text-xs sm:text-sm text-white group-hover:text-amber-200 transition-colors w-full line-clamp-2 mb-1.5"
+								>
+									{ticket.title}
+								</button>
+
+								<!-- Descripción -->
+								<p class="text-[11px] text-slate-400 line-clamp-2 mb-3 leading-relaxed">
+									{ticket.description}
+								</p>
+
+								<!-- Banner de Devolución si aplica -->
+								{#if ticket.return_count > 0}
+									<div class="mb-3 p-2 bg-rose-500/10 border border-rose-500/25 rounded-xl text-[10px] text-rose-300">
+										<span class="font-bold flex items-center gap-1">
+											↩️ Devuelto {ticket.return_count}x a la cola:
+										</span>
+										<p class="italic text-rose-200/80 mt-0.5 truncate">"{ticket.return_reason}"</p>
+									</div>
+								{/if}
+
+								<!-- Card Footer -->
+								<div class="pt-2.5 border-t border-white/[0.06] flex items-center justify-between text-xs">
+									<div class="flex items-center gap-1.5">
+										<div class="w-4 h-4 rounded-full flex items-center justify-center text-[8px] font-black {getAvatarColor(ticket.created_by)}">
 											{ticket.created_by.charAt(0)}
 										</div>
-										<span class="text-[10px] text-slate-400 font-medium">Por: <strong class="text-slate-200">{ticket.created_by}</strong></span>
+										<span class="text-[10px] text-slate-400 font-medium">{ticket.created_by}</span>
 									</div>
 
-									<!-- Acción: Tomar para Validar -->
 									<form method="POST" action="?/takeForValidation" use:enhance>
 										<input type="hidden" name="id" value={ticket.id} />
 										<input type="hidden" name="validatorName" value="Julio" />
 										<button
 											type="submit"
-											class="inline-flex items-center gap-1.5 text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded-xl shadow-md transition-all active:scale-95"
-											title="Tomar solicitud para validarla"
+											class="text-[11px] font-semibold text-indigo-400 hover:text-indigo-300 flex items-center gap-1 transition-colors"
 										>
 											<span>Validar</span>
-											<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-												<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7" />
-											</svg>
+											<span>→</span>
 										</button>
 									</form>
 								</div>
 							</div>
 						{:else}
-							<div class="text-center py-16 text-xs text-amber-300/50 italic border border-dashed border-amber-500/20 rounded-2xl">
-								No hay tickets esperando en la cola.
+							<div class="h-40 rounded-2xl border border-dashed border-white/5 flex items-center justify-center text-xs text-slate-500 italic">
+								Arrastra tickets aquí para ponerlos en cola
 							</div>
 						{/each}
 					</div>
 				</div>
 
 				<!-- COLUMNA 2: EN VALIDACIÓN -->
-				<div class="bg-slate-900/80 rounded-3xl p-4 sm:p-5 border border-blue-500/20 shadow-xl flex flex-col min-h-[600px] backdrop-blur-xs">
-					
+				<!-- svelte-ignore a11y_no_static_element_interactions -->
+				<div
+					ondragover={(e) => onDragOver(e, 'in_validation')}
+					ondragleave={() => onDragLeave('in_validation')}
+					ondrop={(e) => onDrop(e, 'in_validation')}
+					class="rounded-3xl p-4 transition-all flex flex-col min-h-[580px] {activeDropCol === 'in_validation' ? 'ring-2 ring-sky-400 bg-sky-500/10 border-sky-400/50' : 'bg-white/[0.02] border border-white/[0.07]'}"
+				>
 					<!-- Header Validación -->
-					<div class="flex items-center justify-between pb-3.5 mb-4 border-b border-slate-800">
-						<div class="flex items-center gap-2.5">
-							<span class="w-2.5 h-2.5 rounded-full bg-blue-500"></span>
-							<div>
-								<h2 class="font-extrabold text-xs uppercase tracking-wider text-blue-300">En Validación</h2>
-								<p class="text-[10px] text-slate-400">Verificar cumplimiento y salida</p>
-							</div>
+					<div class="flex items-center justify-between pb-3 mb-3 border-b border-white/[0.06]">
+						<div class="flex items-center gap-2">
+							<span class="w-2 h-2 rounded-full bg-sky-400"></span>
+							<h2 class="font-bold text-xs uppercase tracking-wider text-slate-200">En Validación</h2>
 						</div>
-						<span class="bg-blue-500/10 text-blue-300 border border-blue-500/30 text-xs px-2.5 py-0.5 rounded-full font-mono font-bold">
-							{validationTickets.length} en revisión
+						<span class="font-mono text-xs font-bold px-2 py-0.5 rounded-full bg-sky-500/15 text-sky-300 border border-sky-500/30">
+							{validationTickets.length}
 						</span>
 					</div>
 
 					<!-- Lista de Cards en Validación -->
-					<div class="space-y-3.5 flex-1">
+					<div class="space-y-3 flex-1">
 						{#each validationTickets as ticket (ticket.id)}
 							{@const comp = getComplexityConfig(ticket.complexity)}
-							<div class="bg-slate-800/90 rounded-2xl p-4 border border-blue-500/30 shadow-md hover:border-blue-400/60 transition-all flex flex-col justify-between group">
-								<div>
-									<div class="flex items-center justify-between gap-2 mb-2.5">
-										<span class="inline-flex items-center gap-1.5 text-[10px] font-semibold px-2 py-0.5 rounded-full border {comp.badgeClass}">
-											<span class="w-1.5 h-1.5 rounded-full {comp.dotClass}"></span>
-											{comp.shortLabel}
+							<!-- svelte-ignore a11y_no_static_element_interactions -->
+							<div
+								draggable="true"
+								ondragstart={(e) => onDragStart(e, ticket)}
+								ondragend={onDragEnd}
+								class="bg-[#121929]/95 rounded-2xl p-4 border border-sky-500/20 shadow-md hover:border-sky-400/50 transition-all group cursor-grab active:cursor-grabbing {draggedTicket?.id === ticket.id ? 'opacity-40 scale-95' : ''}"
+							>
+								<!-- Top Bar con Grip -->
+								<div class="flex items-center justify-between gap-2 mb-2">
+									<div class="flex items-center gap-2">
+										<span class="text-slate-500 group-hover:text-slate-300 transition-colors">
+											<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+												<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8h16M4 16h16" />
+											</svg>
 										</span>
 										<span class="font-mono text-[10px] text-slate-500">#{ticket.id}</span>
 									</div>
-
-									<button
-										type="button"
-										onclick={() => openTicket(ticket.id)}
-										class="text-left font-bold text-xs sm:text-sm text-white group-hover:text-blue-300 transition-colors w-full line-clamp-2 mb-1.5"
-									>
-										{ticket.title}
-									</button>
-
-									<p class="text-[11px] text-slate-400 line-clamp-2 mb-3 bg-slate-900/60 p-2.5 rounded-xl border border-slate-800 leading-relaxed">
-										{ticket.description}
-									</p>
-
-									<div class="flex items-center gap-3 text-[10px] text-slate-400 mb-3 bg-slate-900/30 p-2 rounded-lg">
-										<span>Solicitó: <strong class="text-slate-200">{ticket.created_by}</strong></span>
-										<span>•</span>
-										<span>Valida: <strong class="text-blue-300">{ticket.assigned_to}</strong></span>
-									</div>
+									<span class="inline-flex items-center gap-1.5 text-[10px] font-semibold px-2 py-0.5 rounded-full border {comp.badgeClass}">
+										<span class="w-1.5 h-1.5 rounded-full {comp.dotClass}"></span>
+										{comp.shortLabel}
+									</span>
 								</div>
 
-								<!-- ACCIONES DUALES: SALIDA O RETORNO -->
-								<div class="pt-3 border-t border-slate-700/60 grid grid-cols-2 gap-2 mt-2">
-									<!-- Retornar a la cola -->
+								<button
+									type="button"
+									onclick={() => openTicket(ticket.id)}
+									class="text-left font-bold text-xs sm:text-sm text-white group-hover:text-sky-300 transition-colors w-full line-clamp-2 mb-1.5"
+								>
+									{ticket.title}
+								</button>
+
+								<p class="text-[11px] text-slate-400 line-clamp-2 mb-3 leading-relaxed">
+									{ticket.description}
+								</p>
+
+								<div class="flex items-center justify-between text-[10px] text-slate-400 mb-3 bg-white/[0.02] p-2 rounded-xl border border-white/[0.04]">
+									<span>Por: <strong class="text-slate-200">{ticket.created_by}</strong></span>
+									<span>Valida: <strong class="text-sky-300">{ticket.assigned_to}</strong></span>
+								</div>
+
+								<!-- ACCIONES DUALES: RETORNAR O DAR SALIDA -->
+								<div class="pt-2.5 border-t border-white/[0.06] grid grid-cols-2 gap-2">
 									<button
 										type="button"
 										onclick={() => openReturnModal(ticket.id, ticket.complexity)}
-										class="inline-flex items-center justify-center gap-1.5 text-xs font-semibold bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 py-2 px-2.5 rounded-xl transition-all"
-										title="Devolver a la cola para corregir"
+										class="inline-flex items-center justify-center gap-1 text-[11px] font-semibold bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/25 py-1.5 rounded-xl transition-all"
 									>
-										<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-											<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
-										</svg>
-										<span>Retornar</span>
+										<span>↩ Retornar</span>
 									</button>
 
-									<!-- Dar Salida -->
 									<button
 										type="button"
 										onclick={() => openCompleteModal(ticket.id)}
-										class="inline-flex items-center justify-center gap-1.5 text-xs font-semibold bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white py-2 px-2.5 rounded-xl shadow-md shadow-emerald-500/20 transition-all"
-										title="Validar y dar salida al ticket"
+										class="inline-flex items-center justify-center gap-1 text-[11px] font-semibold bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black py-1.5 rounded-xl shadow-md transition-all"
 									>
-										<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-											<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7" />
-										</svg>
-										<span>Dar Salida</span>
+										<span>✓ Dar Salida</span>
 									</button>
 								</div>
 							</div>
 						{:else}
-							<div class="text-center py-16 text-xs text-blue-300/50 italic border border-dashed border-blue-500/20 rounded-2xl">
-								No hay tickets en proceso de validación.
+							<div class="h-40 rounded-2xl border border-dashed border-white/5 flex items-center justify-center text-xs text-slate-500 italic">
+								Arrastra aquí una solicitud para validarla
 							</div>
 						{/each}
 					</div>
 				</div>
 
 				<!-- COLUMNA 3: CON SALIDA (COMPLETOS) -->
-				<div class="bg-slate-900/80 rounded-3xl p-4 sm:p-5 border border-emerald-500/20 shadow-xl flex flex-col min-h-[600px] backdrop-blur-xs">
-					
+				<!-- svelte-ignore a11y_no_static_element_interactions -->
+				<div
+					ondragover={(e) => onDragOver(e, 'completed')}
+					ondragleave={() => onDragLeave('completed')}
+					ondrop={(e) => onDrop(e, 'completed')}
+					class="rounded-3xl p-4 transition-all flex flex-col min-h-[580px] {activeDropCol === 'completed' ? 'ring-2 ring-emerald-400 bg-emerald-500/10 border-emerald-400/50' : 'bg-white/[0.02] border border-white/[0.07]'}"
+				>
 					<!-- Header Completados -->
-					<div class="flex items-center justify-between pb-3.5 mb-4 border-b border-slate-800">
-						<div class="flex items-center gap-2.5">
-							<span class="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
-							<div>
-								<h2 class="font-extrabold text-xs uppercase tracking-wider text-emerald-300">Con Salida (Completos)</h2>
-								<p class="text-[10px] text-slate-400">Entregados y resueltos</p>
-							</div>
+					<div class="flex items-center justify-between pb-3 mb-3 border-b border-white/[0.06]">
+						<div class="flex items-center gap-2">
+							<span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+							<h2 class="font-bold text-xs uppercase tracking-wider text-slate-200">Con Salida</h2>
 						</div>
-						<span class="bg-emerald-500/10 text-emerald-300 border border-emerald-500/30 text-xs px-2.5 py-0.5 rounded-full font-mono font-bold">
-							{completedTickets.length} resueltos
+						<span class="font-mono text-xs font-bold px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+							{completedTickets.length}
 						</span>
 					</div>
 
 					<!-- Lista Completadas -->
-					<div class="space-y-3.5 flex-1">
+					<div class="space-y-3 flex-1">
 						{#each completedTickets as ticket (ticket.id)}
 							{@const comp = getComplexityConfig(ticket.complexity)}
-							<div class="bg-slate-800/60 rounded-2xl p-4 border border-slate-700/60 shadow-sm hover:border-emerald-500/40 transition-all flex flex-col justify-between group">
-								<div>
-									<div class="flex items-center justify-between gap-2 mb-2">
-										<span class="inline-flex items-center gap-1.5 text-[10px] font-semibold px-2 py-0.5 rounded-full border {comp.badgeClass}">
-											<span class="w-1.5 h-1.5 rounded-full {comp.dotClass}"></span>
-											{comp.shortLabel}
+							<!-- svelte-ignore a11y_no_static_element_interactions -->
+							<div
+								draggable="true"
+								ondragstart={(e) => onDragStart(e, ticket)}
+								ondragend={onDragEnd}
+								class="bg-[#121929]/70 rounded-2xl p-4 border border-white/[0.05] shadow-xs hover:border-emerald-500/40 transition-all group cursor-grab active:cursor-grabbing {draggedTicket?.id === ticket.id ? 'opacity-40 scale-95' : ''}"
+							>
+								<div class="flex items-center justify-between gap-2 mb-2">
+									<div class="flex items-center gap-1.5">
+										<span class="text-slate-600 group-hover:text-slate-400 transition-colors">
+											<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+												<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8h16M4 16h16" />
+											</svg>
 										</span>
 										<span class="text-[10px] text-emerald-400 font-bold flex items-center gap-1">
-											<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-												<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7" />
-											</svg>
-											Salida Aprobada
+											✓ Salida Aprobada
 										</span>
 									</div>
-
-									<button
-										type="button"
-										onclick={() => openTicket(ticket.id)}
-										class="text-left font-bold text-xs sm:text-sm text-slate-200 group-hover:text-emerald-300 transition-colors w-full line-clamp-2 mb-1.5"
-									>
-										{ticket.title}
-									</button>
-
-									<p class="text-[11px] text-slate-400 line-clamp-2 mb-3 bg-slate-900/40 p-2.5 rounded-xl border border-slate-800/80">
-										{ticket.description}
-									</p>
+									<span class="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full border {comp.badgeClass}">
+										{comp.shortLabel}
+									</span>
 								</div>
 
-								<div class="pt-2.5 border-t border-slate-700/60 flex items-center justify-between text-[10px] text-slate-400 mt-2">
-									<span>Creado por: <strong class="text-slate-300">{ticket.created_by}</strong></span>
+								<button
+									type="button"
+									onclick={() => openTicket(ticket.id)}
+									class="text-left font-bold text-xs text-slate-300 group-hover:text-white transition-colors w-full line-clamp-2 mb-1.5"
+								>
+									{ticket.title}
+								</button>
+
+								<p class="text-[11px] text-slate-500 line-clamp-2 mb-2.5">
+									{ticket.description}
+								</p>
+
+								<div class="pt-2 border-t border-white/[0.04] flex items-center justify-between text-[10px] text-slate-400">
+									<span>Por: {ticket.created_by}</span>
 									<button
 										type="button"
 										onclick={() => openTicket(ticket.id)}
-										class="text-indigo-400 hover:text-indigo-300 font-semibold underline"
+										class="text-indigo-400 hover:text-indigo-300 font-medium"
 									>
-										Ver Historial
+										Ver Notas →
 									</button>
 								</div>
 							</div>
 						{:else}
-							<div class="text-center py-16 text-xs text-emerald-300/50 italic border border-dashed border-emerald-500/20 rounded-2xl">
-								Aún no se han completado solicitudes.
+							<div class="h-40 rounded-2xl border border-dashed border-white/5 flex items-center justify-center text-xs text-slate-500 italic">
+								Arrastra tickets aquí para darles salida aprobada
 							</div>
 						{/each}
 					</div>
@@ -664,24 +782,24 @@
 
 			</div>
 		{:else}
-			<!-- VISTA TABULAR ELEGANTE DE LA COLA -->
-			<div class="bg-slate-900/90 rounded-3xl border border-slate-800 shadow-2xl overflow-hidden backdrop-blur-xs">
-				<div class="p-5 bg-slate-850 border-b border-slate-800 flex items-center justify-between">
+			<!-- VISTA LISTA ESTRICTA DE LA COLA -->
+			<div class="bg-white/[0.02] rounded-3xl border border-white/[0.08] shadow-2xl overflow-hidden backdrop-blur-xl">
+				<div class="p-5 border-b border-white/[0.06] flex items-center justify-between">
 					<div>
-						<h3 class="font-extrabold text-sm sm:text-base text-white tracking-tight">Tabla de Control de la Cola</h3>
-						<p class="text-xs text-slate-400">Orden estricto de despacho según nivel de complejidad y antigüedad</p>
+						<h3 class="font-extrabold text-sm sm:text-base text-white tracking-tight">Despacho Estricto de la Cola</h3>
+						<p class="text-xs text-slate-400">Prioridad absoluta por nivel de complejidad y antigüedad de espera</p>
 					</div>
-					<span class="text-xs font-mono font-bold bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 px-3 py-1 rounded-full">
-						{visibleTickets.length} tickets en sistema
+					<span class="text-xs font-mono font-bold bg-indigo-500/10 text-indigo-400 border border-indigo-500/25 px-3 py-1 rounded-full">
+						{visibleTickets.length} registros
 					</span>
 				</div>
 
 				<div class="overflow-x-auto">
 					<table class="w-full text-left border-collapse text-xs">
 						<thead>
-							<tr class="bg-slate-900 border-b border-slate-800 text-slate-400 font-semibold uppercase tracking-wider text-[10px]">
+							<tr class="bg-white/[0.02] border-b border-white/[0.06] text-slate-400 font-semibold uppercase tracking-wider text-[10px]">
 								<th class="py-3.5 px-5 w-24">Turno</th>
-								<th class="py-3.5 px-5">Descripción de la Solicitud</th>
+								<th class="py-3.5 px-5">Solicitud</th>
 								<th class="py-3.5 px-5 w-36">¿Quién lo hizo?</th>
 								<th class="py-3.5 px-5 w-36">Complejidad</th>
 								<th class="py-3.5 px-5 w-36">Estado</th>
@@ -689,10 +807,10 @@
 								<th class="py-3.5 px-5 w-32 text-right">Acción</th>
 							</tr>
 						</thead>
-						<tbody class="divide-y divide-slate-800/80">
+						<tbody class="divide-y divide-white/[0.04]">
 							{#each visibleTickets as ticket, idx (ticket.id)}
 								{@const comp = getComplexityConfig(ticket.complexity)}
-								<tr class="hover:bg-slate-800/40 transition-colors">
+								<tr class="hover:bg-white/[0.03] transition-colors">
 									<td class="py-4 px-5 font-mono font-bold">
 										{#if ticket.status === 'queue'}
 											<span class="bg-amber-500/20 text-amber-300 border border-amber-500/30 px-2.5 py-1 rounded-lg text-xs font-black">
@@ -713,7 +831,7 @@
 										<p class="text-[11px] text-slate-400 line-clamp-1 mt-0.5">{ticket.description}</p>
 										{#if ticket.return_reason}
 											<span class="inline-block text-[10px] text-rose-400 font-medium mt-1">
-												↩️ Motivo retorno: "{ticket.return_reason}"
+												↩ Motivo retorno: "{ticket.return_reason}"
 											</span>
 										{/if}
 									</td>
@@ -735,14 +853,14 @@
 										{#if ticket.status === 'queue'}
 											<span class="bg-amber-500/10 text-amber-300 border border-amber-500/20 px-2.5 py-1 rounded-full font-semibold text-[11px]">En Cola</span>
 										{:else if ticket.status === 'in_validation'}
-											<span class="bg-blue-500/10 text-blue-300 border border-blue-500/20 px-2.5 py-1 rounded-full font-semibold text-[11px]">En Validación</span>
+											<span class="bg-sky-500/10 text-sky-300 border border-sky-500/20 px-2.5 py-1 rounded-full font-semibold text-[11px]">En Validación</span>
 										{:else}
 											<span class="bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 px-2.5 py-1 rounded-full font-semibold text-[11px]">Con Salida</span>
 										{/if}
 									</td>
 									<td class="py-4 px-5 text-center">
 										{#if ticket.return_count > 0}
-											<span class="font-bold text-rose-400 bg-rose-500/10 border border-rose-500/20 px-2.5 py-1 rounded-full text-xs">
+											<span class="font-bold text-rose-400 bg-rose-500/10 border border-rose-500/20 px-2 py-0.5 rounded-full text-xs">
 												{ticket.return_count}x
 											</span>
 										{:else}
@@ -753,7 +871,7 @@
 										<button
 											type="button"
 											onclick={() => openTicket(ticket.id)}
-											class="text-indigo-400 hover:text-indigo-300 font-semibold hover:underline"
+											class="text-indigo-400 hover:text-indigo-300 font-semibold"
 										>
 											Gestionar →
 										</button>
@@ -768,28 +886,28 @@
 	</main>
 </div>
 
-<!-- MODAL REGISTRAR TICKET (REDESIGN HIGH-END) -->
+<!-- MODAL REGISTRAR NUEVA SOLICITUD (LINEAR STYLE) -->
 {#if showCreateModal}
-	<div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-md p-4">
-		<div class="bg-slate-900 rounded-3xl max-w-lg w-full shadow-2xl border border-slate-800 overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+	<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md p-4">
+		<div class="bg-[#101726] rounded-3xl max-w-lg w-full shadow-2xl border border-white/10 overflow-hidden animate-in fade-in zoom-in-95 duration-150">
 			
-			<div class="px-6 py-5 border-b border-slate-800 flex items-center justify-between">
+			<div class="px-6 py-5 border-b border-white/10 flex items-center justify-between">
 				<div class="flex items-center gap-3">
 					<div class="w-10 h-10 rounded-2xl bg-indigo-500/10 text-indigo-400 flex items-center justify-center ring-1 ring-indigo-500/20">
 						<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 4v16m8-8H4" />
 						</svg>
 					</div>
 					<div>
-						<h3 class="font-extrabold text-base text-white tracking-tight">Registrar Nuevo Ticket</h3>
-						<p class="text-xs text-slate-400">Ingresará a la cola ordenada por complejidad</p>
+						<h3 class="font-black text-base text-white tracking-tight">Nueva Solicitud</h3>
+						<p class="text-xs text-slate-400">Entrará directamente a la cola de despacho</p>
 					</div>
 				</div>
 				<button
 					type="button"
 					aria-label="Cerrar modal de creación"
 					onclick={() => (showCreateModal = false)}
-					class="p-2 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+					class="p-2 rounded-xl text-slate-400 hover:text-white hover:bg-white/5 transition-colors"
 				>
 					<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
@@ -806,17 +924,17 @@
 						showCreateModal = false;
 					};
 				}}
-				class="p-6 space-y-5"
+				class="p-6 space-y-4"
 			>
 				<div>
-					<label for="create_title" class="block text-xs font-semibold text-slate-300 mb-1.5">Título del Requerimiento *</label>
+					<label for="create_title" class="block text-xs font-semibold text-slate-300 mb-1.5">Título del Ticket *</label>
 					<input
 						id="create_title"
 						type="text"
 						name="title"
 						required
-						placeholder="Ej. Sincronización automática de bases de datos o informe de ventas"
-						class="w-full text-xs sm:text-sm px-3.5 py-2.5 bg-slate-800/80 border border-slate-700 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all"
+						placeholder="Ej. Sincronización de credenciales o ajuste de API"
+						class="w-full text-xs sm:text-sm px-3.5 py-2.5 bg-white/[0.04] border border-white/10 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 transition-all"
 					/>
 				</div>
 
@@ -827,15 +945,15 @@
 						name="description"
 						rows="3"
 						required
-						placeholder="Explica qué se debe hacer, criterios de aceptación y detalles técnicos..."
-						class="w-full text-xs sm:text-sm px-3.5 py-2.5 bg-slate-800/80 border border-slate-700 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none transition-all"
+						placeholder="Explica qué se debe validar o realizar con exactitud..."
+						class="w-full text-xs sm:text-sm px-3.5 py-2.5 bg-white/[0.04] border border-white/10 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 resize-none transition-all"
 					></textarea>
 				</div>
 
-				<!-- ¿Quién lo hizo? (Interactive Cards) -->
+				<!-- ¿Quién lo hizo? -->
 				<div>
-					<span class="block text-xs font-semibold text-slate-300 mb-2">¿Quién lo hizo? (Solicitante) *</span>
-					<div class="grid grid-cols-3 gap-2.5">
+					<span class="block text-xs font-semibold text-slate-300 mb-2">¿Quién lo hizo? (Creador)</span>
+					<div class="grid grid-cols-3 gap-2">
 						{#each teamMembers as member}
 							<label class="cursor-pointer">
 								<input
@@ -845,24 +963,22 @@
 									bind:group={createCreatedBy}
 									class="sr-only"
 								/>
-								<div class="p-3 rounded-2xl border text-center transition-all {createCreatedBy === member.name ? 'bg-indigo-600/20 border-indigo-500 text-white ring-1 ring-indigo-500' : 'bg-slate-800/60 border-slate-700 text-slate-400 hover:bg-slate-800'}">
-									<div class="w-7 h-7 mx-auto rounded-full flex items-center justify-center text-xs font-bold text-white mb-1.5 {member.color}">
+								<div class="p-2.5 rounded-2xl border text-center transition-all {createCreatedBy === member.name ? 'bg-indigo-600/20 border-indigo-500 text-white ring-1 ring-indigo-500' : 'bg-white/[0.02] border-white/10 text-slate-400 hover:bg-white/[0.05]'}" >
+									<div class="w-6 h-6 mx-auto rounded-full flex items-center justify-center text-[10px] font-black text-white mb-1 {member.color}">
 										{member.name.charAt(0)}
 									</div>
 									<div class="text-xs font-bold">{member.name}</div>
-									<div class="text-[10px] text-slate-400">{member.role}</div>
+									<div class="text-[9px] text-slate-400">{member.role}</div>
 								</div>
 							</label>
 						{/each}
 					</div>
 				</div>
 
-				<!-- Nivel de Complejidad (Segmented Visual Cards) -->
+				<!-- Nivel de Complejidad -->
 				<div>
-					<span class="block text-xs font-semibold text-slate-300 mb-2">Nivel de Complejidad (Prioridad en Cola) *</span>
-					<div class="grid grid-cols-3 gap-2.5">
-						
-						<!-- Alta -->
+					<span class="block text-xs font-semibold text-slate-300 mb-2">Nivel de Complejidad</span>
+					<div class="grid grid-cols-3 gap-2">
 						<label class="cursor-pointer">
 							<input
 								type="radio"
@@ -871,16 +987,15 @@
 								bind:group={createComplexity}
 								class="sr-only"
 							/>
-							<div class="p-3 rounded-2xl border transition-all {createComplexity === 'alta' ? 'bg-rose-500/20 border-rose-500 text-white ring-1 ring-rose-500' : 'bg-slate-800/60 border-slate-700 text-slate-400 hover:bg-slate-800'}">
-								<div class="flex items-center gap-1.5 mb-1 font-bold text-xs text-rose-400">
-									<span class="w-2 h-2 rounded-full bg-rose-500 animate-ping"></span>
+							<div class="p-2.5 rounded-2xl border transition-all {createComplexity === 'alta' ? 'bg-rose-500/20 border-rose-500 text-white ring-1 ring-rose-500' : 'bg-white/[0.02] border-white/10 text-slate-400 hover:bg-white/[0.05]'}">
+								<div class="flex items-center gap-1.5 font-bold text-xs text-rose-300 mb-0.5">
+									<span class="w-2 h-2 rounded-full bg-rose-500"></span>
 									Alta
 								</div>
-								<p class="text-[10px] text-slate-400 leading-tight">Primeros turnos en cola</p>
+								<p class="text-[9px] text-slate-400">Prioridad máxima en cola</p>
 							</div>
 						</label>
 
-						<!-- Media -->
 						<label class="cursor-pointer">
 							<input
 								type="radio"
@@ -889,16 +1004,15 @@
 								bind:group={createComplexity}
 								class="sr-only"
 							/>
-							<div class="p-3 rounded-2xl border transition-all {createComplexity === 'media' ? 'bg-amber-500/20 border-amber-500 text-white ring-1 ring-amber-500' : 'bg-slate-800/60 border-slate-700 text-slate-400 hover:bg-slate-800'}">
-								<div class="flex items-center gap-1.5 mb-1 font-bold text-xs text-amber-400">
+							<div class="p-2.5 rounded-2xl border transition-all {createComplexity === 'media' ? 'bg-amber-500/20 border-amber-500 text-white ring-1 ring-amber-500' : 'bg-white/[0.02] border-white/10 text-slate-400 hover:bg-white/[0.05]'}">
+								<div class="flex items-center gap-1.5 font-bold text-xs text-amber-300 mb-0.5">
 									<span class="w-2 h-2 rounded-full bg-amber-500"></span>
 									Media
 								</div>
-								<p class="text-[10px] text-slate-400 leading-tight">Flujo estándar de espera</p>
+								<p class="text-[9px] text-slate-400">Espera estándar</p>
 							</div>
 						</label>
 
-						<!-- Baja -->
 						<label class="cursor-pointer">
 							<input
 								type="radio"
@@ -907,23 +1021,22 @@
 								bind:group={createComplexity}
 								class="sr-only"
 							/>
-							<div class="p-3 rounded-2xl border transition-all {createComplexity === 'baja' ? 'bg-emerald-500/20 border-emerald-500 text-white ring-1 ring-emerald-500' : 'bg-slate-800/60 border-slate-700 text-slate-400 hover:bg-slate-800'}">
-								<div class="flex items-center gap-1.5 mb-1 font-bold text-xs text-emerald-400">
+							<div class="p-2.5 rounded-2xl border transition-all {createComplexity === 'baja' ? 'bg-emerald-500/20 border-emerald-500 text-white ring-1 ring-emerald-500' : 'bg-white/[0.02] border-white/10 text-slate-400 hover:bg-white/[0.05]'}">
+								<div class="flex items-center gap-1.5 font-bold text-xs text-emerald-300 mb-0.5">
 									<span class="w-2 h-2 rounded-full bg-emerald-500"></span>
 									Baja
 								</div>
-								<p class="text-[10px] text-slate-400 leading-tight">Resolución rápida</p>
+								<p class="text-[9px] text-slate-400">Resolución ágil</p>
 							</div>
 						</label>
-
 					</div>
 				</div>
 
-				<div class="pt-4 border-t border-slate-800 flex items-center justify-end gap-3">
+				<div class="pt-4 border-t border-white/10 flex items-center justify-end gap-3">
 					<button
 						type="button"
 						onclick={() => (showCreateModal = false)}
-						class="px-4 py-2 text-xs font-semibold text-slate-400 hover:text-white transition-colors"
+						class="px-4 py-2 text-xs font-semibold text-slate-400 hover:text-white"
 					>
 						Cancelar
 					</button>
@@ -931,7 +1044,7 @@
 						type="submit"
 						class="px-5 py-2.5 text-xs font-bold bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl shadow-lg shadow-indigo-500/30 transition-all active:scale-95"
 					>
-						Poner en Cola de Espera
+						Poner en Cola
 					</button>
 				</div>
 			</form>
@@ -941,20 +1054,13 @@
 
 <!-- MODAL RETORNAR A LA COLA -->
 {#if returnModalTicketId}
-	<div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-md p-4">
-		<div class="bg-slate-900 rounded-3xl max-w-md w-full shadow-2xl border border-rose-500/30 overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+	<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md p-4">
+		<div class="bg-[#101726] rounded-3xl max-w-md w-full shadow-2xl border border-rose-500/30 overflow-hidden animate-in fade-in zoom-in-95 duration-150">
 			
-			<div class="px-6 py-5 border-b border-slate-800 flex items-center justify-between bg-rose-500/10">
-				<div class="flex items-center gap-3">
-					<div class="w-10 h-10 rounded-2xl bg-rose-500/20 text-rose-300 flex items-center justify-center ring-1 ring-rose-500/30">
-						<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
-						</svg>
-					</div>
-					<div>
-						<h3 class="font-extrabold text-base text-white tracking-tight">Retornar Ticket a la Cola</h3>
-						<p class="text-xs text-rose-300">Regresa a esperar turno con su motivo</p>
-					</div>
+			<div class="px-6 py-5 border-b border-white/10 flex items-center justify-between bg-rose-500/10">
+				<div>
+					<h3 class="font-black text-base text-white tracking-tight">Retornar a la Cola</h3>
+					<p class="text-xs text-rose-300">Regresa a esperar turno con su motivo</p>
 				</div>
 				<button
 					type="button"
@@ -987,7 +1093,7 @@
 						id="ret_who"
 						name="returnedBy"
 						bind:value={returnAuthor}
-						class="w-full text-xs px-3.5 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-rose-500"
+						class="w-full text-xs px-3.5 py-2.5 bg-white/[0.04] border border-white/10 rounded-xl text-white focus:outline-none focus:ring-1 focus:ring-rose-500"
 					>
 						<option value="Julio">Julio</option>
 						<option value="Domingo">Domingo</option>
@@ -998,13 +1104,12 @@
 				<div>
 					<label for="ret_reason" class="block text-xs font-semibold text-slate-300 mb-1.5">Motivo del Retorno *</label>
 					
-					<!-- Atajos rápidos de motivos -->
-					<div class="flex flex-wrap gap-1.5 mb-2">
+					<div class="flex flex-wrap gap-1 mb-2">
 						{#each quickReasons as qr}
 							<button
 								type="button"
 								onclick={() => (returnReason = qr)}
-								class="text-[10px] bg-slate-800 hover:bg-slate-700 text-slate-300 px-2 py-1 rounded-lg border border-slate-700 transition-colors text-left"
+								class="text-[10px] bg-white/[0.03] hover:bg-white/[0.08] text-slate-300 px-2 py-1 rounded-lg border border-white/10 transition-colors text-left"
 							>
 								+ {qr}
 							</button>
@@ -1017,8 +1122,8 @@
 						required
 						rows="3"
 						bind:value={returnReason}
-						placeholder="Indica qué falta o qué debe ser corregido antes de dar salida..."
-						class="w-full text-xs px-3.5 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-rose-500 resize-none"
+						placeholder="Indica qué falta antes de dar salida..."
+						class="w-full text-xs px-3.5 py-2.5 bg-white/[0.04] border border-white/10 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-rose-500 resize-none"
 					></textarea>
 				</div>
 
@@ -1028,15 +1133,15 @@
 						id="ret_comp"
 						name="adjustedComplexity"
 						bind:value={returnComplexity}
-						class="w-full text-xs px-3.5 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-rose-500"
+						class="w-full text-xs px-3.5 py-2.5 bg-white/[0.04] border border-white/10 rounded-xl text-white focus:outline-none focus:ring-1 focus:ring-rose-500"
 					>
-						<option value="alta">🔴 Alta Complejidad (Prioridad alta en la cola)</option>
+						<option value="alta">🔴 Alta Complejidad (Prioridad máxima en cola)</option>
 						<option value="media">🟡 Media Complejidad (Espera estándar)</option>
 						<option value="baja">🟢 Baja Complejidad</option>
 					</select>
 				</div>
 
-				<div class="pt-4 border-t border-slate-800 flex items-center justify-end gap-3">
+				<div class="pt-4 border-t border-white/10 flex items-center justify-end gap-3">
 					<button
 						type="button"
 						onclick={() => (returnModalTicketId = null)}
@@ -1046,7 +1151,7 @@
 					</button>
 					<button
 						type="submit"
-						class="px-5 py-2.5 text-xs font-bold bg-rose-600 hover:bg-rose-500 text-white rounded-xl shadow-lg shadow-rose-600/30 transition-all"
+						class="px-5 py-2.5 text-xs font-bold bg-rose-600 hover:bg-rose-500 text-white rounded-xl shadow-lg transition-all"
 					>
 						Confirmar y Devolver
 					</button>
@@ -1058,20 +1163,13 @@
 
 <!-- MODAL DAR SALIDA (COMPLETAR) -->
 {#if completeModalTicketId}
-	<div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-md p-4">
-		<div class="bg-slate-900 rounded-3xl max-w-md w-full shadow-2xl border border-emerald-500/30 overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+	<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md p-4">
+		<div class="bg-[#101726] rounded-3xl max-w-md w-full shadow-2xl border border-emerald-500/30 overflow-hidden animate-in fade-in zoom-in-95 duration-150">
 			
-			<div class="px-6 py-5 border-b border-slate-800 flex items-center justify-between bg-emerald-500/10">
-				<div class="flex items-center gap-3">
-					<div class="w-10 h-10 rounded-2xl bg-emerald-500/20 text-emerald-300 flex items-center justify-center ring-1 ring-emerald-500/30">
-						<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7" />
-						</svg>
-					</div>
-					<div>
-						<h3 class="font-extrabold text-base text-white tracking-tight">Dar Salida al Ticket</h3>
-						<p class="text-xs text-emerald-300">Aprobar y marcar como terminado con éxito</p>
-					</div>
+			<div class="px-6 py-5 border-b border-white/10 flex items-center justify-between bg-emerald-500/10">
+				<div>
+					<h3 class="font-black text-base text-white tracking-tight">Dar Salida al Ticket</h3>
+					<p class="text-xs text-emerald-300">Aprobar y marcar como terminado con éxito</p>
 				</div>
 				<button
 					type="button"
@@ -1099,12 +1197,12 @@
 				<input type="hidden" name="id" value={completeModalTicketId} />
 
 				<div>
-					<label for="comp_who" class="block text-xs font-semibold text-slate-300 mb-1.5">Validador que aprueba la salida:</label>
+					<label for="comp_who" class="block text-xs font-semibold text-slate-300 mb-1.5">Validador que da la salida:</label>
 					<select
 						id="comp_who"
 						name="resolvedBy"
 						bind:value={completeAuthor}
-						class="w-full text-xs px-3.5 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+						class="w-full text-xs px-3.5 py-2.5 bg-white/[0.04] border border-white/10 rounded-xl text-white focus:outline-none focus:ring-1 focus:ring-emerald-500"
 					>
 						<option value="Julio">Julio</option>
 						<option value="Domingo">Domingo</option>
@@ -1113,17 +1211,17 @@
 				</div>
 
 				<div>
-					<label for="comp_note" class="block text-xs font-semibold text-slate-300 mb-1.5">Nota de Cierre / Dictamen (Opcional):</label>
+					<label for="comp_note" class="block text-xs font-semibold text-slate-300 mb-1.5">Nota de Salida (Opcional):</label>
 					<textarea
 						id="comp_note"
 						name="closingNote"
 						rows="2"
-						placeholder="Ej. Tarea validada con éxito. Cumple con todos los requisitos..."
-						class="w-full text-xs px-3.5 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 resize-none"
+						placeholder="Ej. Tarea validada con éxito. Listo para producción..."
+						class="w-full text-xs px-3.5 py-2.5 bg-white/[0.04] border border-white/10 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 resize-none"
 					></textarea>
 				</div>
 
-				<div class="pt-4 border-t border-slate-800 flex items-center justify-end gap-3">
+				<div class="pt-4 border-t border-white/10 flex items-center justify-end gap-3">
 					<button
 						type="button"
 						onclick={() => (completeModalTicketId = null)}
@@ -1133,9 +1231,9 @@
 					</button>
 					<button
 						type="submit"
-						class="px-5 py-2.5 text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl shadow-lg shadow-emerald-600/30 transition-all"
+						class="px-5 py-2.5 text-xs font-bold bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black rounded-xl shadow-lg transition-all"
 					>
-						Aprobar y Dar Salida
+						Aprobar Salida
 					</button>
 				</div>
 			</form>
@@ -1146,18 +1244,17 @@
 <!-- MODAL DETALLE / HISTORIAL -->
 {#if activeTicket}
 	{@const comp = getComplexityConfig(activeTicket.complexity)}
-	<div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-md p-4">
-		<div class="bg-slate-900 rounded-3xl max-w-2xl w-full max-h-[90vh] flex flex-col shadow-2xl border border-slate-800 overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+	<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md p-4">
+		<div class="bg-[#101726] rounded-3xl max-w-2xl w-full max-h-[90vh] flex flex-col shadow-2xl border border-white/10 overflow-hidden animate-in fade-in zoom-in-95 duration-150">
 			
-			<!-- Header Modal -->
-			<div class="px-6 py-4 border-b border-slate-800 flex items-center justify-between bg-slate-850">
+			<div class="px-6 py-4 border-b border-white/10 flex items-center justify-between bg-white/[0.02]">
 				<div class="flex items-center gap-3">
 					<span class="font-mono text-xs font-bold text-slate-400">#{activeTicket.id}</span>
 					<span class="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-0.5 rounded-full border {comp.badgeClass}">
 						<span class="w-1.5 h-1.5 rounded-full {comp.dotClass}"></span>
-						{comp.label}
+						{comp.shortLabel}
 					</span>
-					<span class="text-xs font-bold px-2.5 py-0.5 rounded-full {activeTicket.status === 'queue' ? 'bg-amber-500/10 text-amber-300 border border-amber-500/30' : activeTicket.status === 'in_validation' ? 'bg-blue-500/10 text-blue-300 border border-blue-500/30' : 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/30'}">
+					<span class="text-xs font-bold px-2.5 py-0.5 rounded-full {activeTicket.status === 'queue' ? 'bg-amber-500/10 text-amber-300 border border-amber-500/30' : activeTicket.status === 'in_validation' ? 'bg-sky-500/10 text-sky-300 border border-sky-500/30' : 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/30'}">
 						{activeTicket.status === 'queue' ? 'En Cola de Espera' : activeTicket.status === 'in_validation' ? 'En Validación' : 'Salida Aprobada'}
 					</span>
 				</div>
@@ -1165,7 +1262,7 @@
 					type="button"
 					aria-label="Cerrar modal de detalle"
 					onclick={closeTicketModal}
-					class="p-2 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+					class="p-2 rounded-xl text-slate-400 hover:text-white hover:bg-white/5 transition-colors"
 				>
 					<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
@@ -1173,36 +1270,34 @@
 				</button>
 			</div>
 
-			<!-- Contenido Scrollable -->
 			<div class="p-6 overflow-y-auto space-y-6 flex-1">
 				<div>
 					<h2 class="text-lg font-bold text-white mb-2">{activeTicket.title}</h2>
-					<p class="text-xs text-slate-300 whitespace-pre-wrap leading-relaxed bg-slate-800/80 p-4 rounded-2xl border border-slate-700/80">
+					<p class="text-xs text-slate-300 whitespace-pre-wrap leading-relaxed bg-white/[0.03] p-4 rounded-2xl border border-white/[0.06]">
 						{activeTicket.description}
 					</p>
 
-					<!-- Metadata Cards -->
 					<div class="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
-						<div class="bg-slate-800/50 p-3 rounded-xl border border-slate-700/60">
+						<div class="bg-white/[0.02] p-3 rounded-xl border border-white/[0.06]">
 							<span class="text-slate-400 block text-[10px] uppercase font-bold">Quién lo hizo</span>
 							<span class="font-bold text-white">{activeTicket.created_by}</span>
 						</div>
-						<div class="bg-slate-800/50 p-3 rounded-xl border border-slate-700/60">
+						<div class="bg-white/[0.02] p-3 rounded-xl border border-white/[0.06]">
 							<span class="text-slate-400 block text-[10px] uppercase font-bold">Complejidad</span>
 							<span class="font-bold text-white capitalize">{activeTicket.complexity}</span>
 						</div>
-						<div class="bg-slate-800/50 p-3 rounded-xl border border-slate-700/60">
-							<span class="text-slate-400 block text-[10px] uppercase font-bold">Reintentos / Devoluciones</span>
+						<div class="bg-white/[0.02] p-3 rounded-xl border border-white/[0.06]">
+							<span class="text-slate-400 block text-[10px] uppercase font-bold">Devoluciones</span>
 							<span class="font-bold text-rose-400">{activeTicket.return_count} veces</span>
 						</div>
-						<div class="bg-slate-800/50 p-3 rounded-xl border border-slate-700/60">
+						<div class="bg-white/[0.02] p-3 rounded-xl border border-white/[0.06]">
 							<span class="text-slate-400 block text-[10px] uppercase font-bold">Registro</span>
 							<span class="font-bold text-white font-mono text-[11px]">{activeTicket.created_at}</span>
 						</div>
 					</div>
 
 					{#if activeTicket.return_reason}
-						<div class="mt-4 p-3.5 bg-rose-500/10 border border-rose-500/30 rounded-2xl text-xs text-rose-200">
+						<div class="mt-4 p-3.5 bg-rose-500/10 border border-rose-500/25 rounded-2xl text-xs text-rose-200">
 							<span class="font-bold text-rose-300 block mb-1">Último motivo de retorno a la cola:</span>
 							<p class="italic">"{activeTicket.return_reason}"</p>
 						</div>
@@ -1210,7 +1305,7 @@
 				</div>
 
 				<!-- Bitácora -->
-				<div class="border-t border-slate-800 pt-5">
+				<div class="border-t border-white/10 pt-5">
 					<h4 class="font-bold text-xs uppercase tracking-wider text-slate-300 mb-3 flex items-center gap-2">
 						<svg class="w-4 h-4 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
@@ -1219,9 +1314,9 @@
 					</h4>
 
 					{#if data.selectedTicket?.comments && data.selectedTicket.comments.length > 0}
-						<div class="space-y-2.5 mb-4">
+						<div class="space-y-2 mb-4">
 							{#each data.selectedTicket.comments as c (c.id)}
-								<div class="bg-slate-800/60 p-3 rounded-xl border border-slate-700/60 text-xs">
+								<div class="bg-white/[0.03] p-3 rounded-xl border border-white/[0.06] text-xs">
 									<div class="flex items-center justify-between mb-1">
 										<div class="flex items-center gap-1.5">
 											<div class="w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-bold {getAvatarColor(c.author)}">
@@ -1243,7 +1338,7 @@
 						method="POST"
 						action="?/addComment"
 						use:enhance
-						class="flex gap-2 bg-slate-800/50 p-2 rounded-xl border border-slate-700"
+						class="flex gap-2 bg-white/[0.02] p-2 rounded-xl border border-white/10"
 					>
 						<input type="hidden" name="ticketId" value={activeTicket.id} />
 						<input
@@ -1251,14 +1346,14 @@
 							name="author"
 							placeholder="Tu nombre (ej. Julio)"
 							required
-							class="w-1/3 text-xs px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-white"
+							class="w-1/3 text-xs px-3 py-2 bg-white/[0.04] border border-white/10 rounded-lg text-white"
 						/>
 						<input
 							type="text"
 							name="content"
-							placeholder="Escribe una observación o actualización..."
+							placeholder="Escribe una observación..."
 							required
-							class="flex-1 text-xs px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-white"
+							class="flex-1 text-xs px-3 py-2 bg-white/[0.04] border border-white/10 rounded-lg text-white"
 						/>
 						<button
 							type="submit"
@@ -1270,8 +1365,7 @@
 				</div>
 			</div>
 
-			<!-- Footer Modal -->
-			<div class="px-6 py-4 border-t border-slate-800 bg-slate-850 flex items-center justify-between">
+			<div class="px-6 py-4 border-t border-white/10 bg-white/[0.02] flex items-center justify-between">
 				<form
 					method="POST"
 					action="?/delete"
@@ -1300,7 +1394,7 @@
 				<button
 					type="button"
 					onclick={closeTicketModal}
-					class="px-4 py-2 text-xs font-semibold text-slate-300 bg-slate-800 hover:bg-slate-700 rounded-xl border border-slate-700 transition-colors"
+					class="px-4 py-2 text-xs font-semibold text-slate-300 bg-white/[0.06] hover:bg-white/[0.1] rounded-xl border border-white/10 transition-colors"
 				>
 					Cerrar
 				</button>

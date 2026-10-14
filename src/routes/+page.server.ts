@@ -71,6 +71,30 @@ export const actions: Actions = {
 		return { success: true };
 	},
 
+	dragMove: async ({ request }) => {
+		const data = await request.formData();
+		const id = Number(data.get('id'));
+		const targetStatus = data.get('targetStatus')?.toString() as
+			| 'queue'
+			| 'in_validation'
+			| 'completed';
+		const actor = data.get('actor')?.toString()?.trim() || 'Julio';
+
+		if (!id || !targetStatus) {
+			return fail(400, { error: 'Parámetros inválidos para mover el ticket.' });
+		}
+
+		if (targetStatus === 'in_validation') {
+			takeTicketForValidation(id, actor);
+		} else if (targetStatus === 'completed') {
+			completeTicket(id, actor, 'Aprobado y movido vía drag & drop');
+		} else if (targetStatus === 'queue') {
+			returnTicketToQueue(id, actor, 'Retornado a la cola vía tablero interactivo');
+		}
+
+		return { success: true };
+	},
+
 	takeForValidation: async ({ request }) => {
 		const data = await request.formData();
 		const id = Number(data.get('id'));
