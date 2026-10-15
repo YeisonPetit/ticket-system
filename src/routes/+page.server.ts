@@ -5,27 +5,28 @@ import {
 	getStats,
 	getTicketWithComments,
 	createTicket,
-	updateTicket,
 	deleteTicket,
 	addComment,
-	takeTicketForValidation,
-	completeTicket,
-	returnTicketToQueue
+	callNextTurnForAgent,
+	completeTurn,
+	returnTurnToQueue,
+	updateTicketStatusDirect,
+	getAgentsOverview
 } from '$lib/server/db';
 
 export const load: PageServerLoad = async ({ url }) => {
 	const status = url.searchParams.get('status') || 'all';
-	const assigned_to = url.searchParams.get('assigned') || 'all';
-	const created_by = url.searchParams.get('created_by') || 'all';
+	const served_by = url.searchParams.get('served_by') || 'all';
 	const complexity = url.searchParams.get('complexity') || 'all';
 	const search = url.searchParams.get('q') || '';
 	const selectedTicketId = url.searchParams.get('ticket')
 		? Number(url.searchParams.get('ticket'))
 		: null;
 
-	const filters = { status, assigned_to, created_by, complexity, search };
+	const filters = { status, served_by, complexity, search };
 	const tickets = getAllTickets(filters);
 	const stats = getStats();
+	const overview = getAgentsOverview();
 
 	let selectedTicket = null;
 	if (selectedTicketId && !isNaN(selectedTicketId)) {
@@ -35,77 +36,65 @@ export const load: PageServerLoad = async ({ url }) => {
 	return {
 		tickets,
 		stats,
+		overview,
 		filters,
 		selectedTicket
 	};
 };
 
 export const actions: Actions = {
+	switchUser: async ({ request, cookies }) => {
+		const data = await request.formData();
+		const userId = data.get('userId')?.toString();
+
+		if (userId) {
+			cookies.set('pulse_user_id', userId, {
+				path: '/',
+				maxAge: 60 * 60 * 24 * 30, // 30 days
+				httpOnly: false,
+				sameSite: 'lax'
+			});
+		}
+
+		return { success: true };
+	},
+
 	create: async ({ request }) => {
 		const data = await request.formData();
 		const title = data.get('title')?.toString()?.trim();
 		const description = data.get('description')?.toString()?.trim() || '';
-		const created_by = data.get('created_by')?.toString()?.trim() || 'Yeison';
+		const created_by = data.get('created_by')?.toString()?.trim() || 'Usuario';
 		const complexity = (data.get('complexity')?.toString() || 'media') as 'alta' | 'media' | 'baja';
-		const assigned_to = data.get('assigned_to')?.toString() || 'Sin asignar';
-		const category = data.get('category')?.toString() || 'General';
 
 		if (!title) {
 			return fail(400, { error: 'El título del ticket es obligatorio.' });
 		}
 
-		if (!description) {
-			return fail(400, { error: 'La descripción del ticket es obligatoria.' });
-		}
-
-		createTicket({
+		const result = createTicket({
 			title,
 			description,
 			created_by,
-			complexity,
-			assigned_to,
-			category,
-			status: 'queue'
+			complexity
 		});
 
-		return { success: true };
+		return { success: true, turnCode: result.turn_code };
 	},
 
-	dragMove: async ({ request }) => {
+	callNext: async ({ request, cookies }) => {
 		const data = await request.formData();
-		const id = Number(data.get('id'));
-		const targetStatus = data.get('targetStatus')?.toString() as
-			| 'queue'
-			| 'in_validation'
-			| 'completed';
-		const actor = data.get('actor')?.toString()?.trim() || 'Julio';
+		const formAgentId = data.get('agentId')?.toString();
+		const cookieUserId = cookies.get('pulse_user_id') || '1';
+		const agentId = Number(formAgentId || cookieUserId);
 
-		if (!id || !targetStatus) {
-			return fail(400, { error: 'Parámetros inválidos para mover el ticket.' });
+		try {
+			const called = callNextTurnForAgent(agentId);
+			if (!called) {
+				return fail(400, { error: 'No hay turnos disponibles en la cola de espera.' });
+			}
+			return { success: true };
+		} catch (e: any) {
+			return fail(500, { error: e.message });
 		}
-
-		if (targetStatus === 'in_validation') {
-			takeTicketForValidation(id, actor);
-		} else if (targetStatus === 'completed') {
-			completeTicket(id, actor, 'Aprobado y movido vía drag & drop');
-		} else if (targetStatus === 'queue') {
-			returnTicketToQueue(id, actor, 'Retornado a la cola vía tablero interactivo');
-		}
-
-		return { success: true };
-	},
-
-	takeForValidation: async ({ request }) => {
-		const data = await request.formData();
-		const id = Number(data.get('id'));
-		const validatorName = data.get('validatorName')?.toString()?.trim() || 'Julio';
-
-		if (!id) {
-			return fail(400, { error: 'ID de ticket inválido.' });
-		}
-
-		takeTicketForValidation(id, validatorName);
-		return { success: true };
 	},
 
 	complete: async ({ request }) => {
@@ -114,11 +103,9 @@ export const actions: Actions = {
 		const resolvedBy = data.get('resolvedBy')?.toString()?.trim() || 'Julio';
 		const closingNote = data.get('closingNote')?.toString()?.trim() || '';
 
-		if (!id) {
-			return fail(400, { error: 'ID de ticket inválido.' });
-		}
+		if (!id) return fail(400, { error: 'ID inválido.' });
 
-		completeTicket(id, resolvedBy, closingNote);
+		completeTurn(id, resolvedBy, closingNote);
 		return { success: true };
 	},
 
@@ -133,41 +120,26 @@ export const actions: Actions = {
 			| 'baja'
 			| undefined;
 
-		if (!id) {
-			return fail(400, { error: 'ID de ticket inválido.' });
-		}
-
-		if (!reason) {
+		if (!id || !reason) {
 			return fail(400, { error: 'Debes indicar el motivo de la devolución a la cola.' });
 		}
 
-		returnTicketToQueue(id, returnedBy, reason, adjustedComplexity);
+		returnTurnToQueue(id, returnedBy, reason, adjustedComplexity);
 		return { success: true };
 	},
 
-	updateTicket: async ({ request }) => {
+	dragMove: async ({ request }) => {
 		const data = await request.formData();
 		const id = Number(data.get('id'));
-		const title = data.get('title')?.toString()?.trim();
-		const description = data.get('description')?.toString()?.trim();
-		const created_by = data.get('created_by')?.toString()?.trim();
-		const complexity = data.get('complexity')?.toString() as 'alta' | 'media' | 'baja';
-		const assigned_to = data.get('assigned_to')?.toString();
-		const status = data.get('status')?.toString() as 'queue' | 'in_validation' | 'completed';
+		const targetStatus = data.get('targetStatus')?.toString() as
+			| 'waiting'
+			| 'serving'
+			| 'completed';
+		const actor = data.get('actor')?.toString()?.trim() || 'Julio';
 
-		if (!id || !title) {
-			return fail(400, { error: 'El título y el ID son obligatorios.' });
-		}
+		if (!id || !targetStatus) return fail(400);
 
-		updateTicket(id, {
-			title,
-			description,
-			created_by,
-			complexity,
-			assigned_to,
-			status
-		});
-
+		updateTicketStatusDirect(id, targetStatus, actor);
 		return { success: true };
 	},
 
@@ -175,9 +147,7 @@ export const actions: Actions = {
 		const data = await request.formData();
 		const id = Number(data.get('id'));
 
-		if (!id) {
-			return fail(400, { error: 'ID de ticket no proporcionado.' });
-		}
+		if (!id) return fail(400);
 
 		deleteTicket(id);
 		return { success: true };
