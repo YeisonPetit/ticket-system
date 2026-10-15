@@ -1,11 +1,18 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
+	import { playTicketIssued } from '$lib/audio';
 	import type { ActionData, PageData } from './$types';
 
 	let { data, form }: { data: PageData; form: ActionData } = $props();
 
 	let selectedComplexity = $state<'alta' | 'media' | 'baja'>('media');
 	let isSubmitting = $state(false);
+
+	$effect(() => {
+		if (form?.success) {
+			playTicketIssued();
+		}
+	});
 </script>
 
 <svelte:head>

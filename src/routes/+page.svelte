@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
 	import { invalidateAll } from '$app/navigation';
+	import { playSuccessJoy, playTurnCallChime } from '$lib/audio';
 	import type { PageData } from './$types';
 	import type { Ticket } from '$lib/server/db';
 
@@ -188,6 +189,12 @@
 		formData.append('id', movingTicket.id.toString());
 		formData.append('targetStatus', targetCol);
 		formData.append('actor', 'Julio');
+
+		if (targetCol === 'completed') {
+			playSuccessJoy();
+		} else if (targetCol === 'serving') {
+			playTurnCallChime();
+		}
 
 		try {
 			await fetch('?/dragMove', { method: 'POST', body: formData });

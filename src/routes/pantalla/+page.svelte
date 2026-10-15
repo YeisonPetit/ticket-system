@@ -1,18 +1,31 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { invalidateAll } from '$app/navigation';
+	import { playTurnCallChime } from '$lib/audio';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
 
 	let currentTime = $state('');
 	let currentDate = $state('');
+	let soundEnabled = $state(true);
+	let lastPlayedCallTime = $state<string | null>(null);
 
 	function updateClock() {
 		const now = new Date();
 		currentTime = now.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 		currentDate = now.toLocaleDateString('es-ES', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
 	}
+
+	$effect(() => {
+		const currentCallTime = data.overview.lastCalled?.last_called_at;
+		if (currentCallTime && currentCallTime !== lastPlayedCallTime) {
+			lastPlayedCallTime = currentCallTime;
+			if (soundEnabled) {
+				playTurnCallChime();
+			}
+		}
+	});
 
 	onMount(() => {
 		updateClock();
@@ -28,6 +41,13 @@
 			clearInterval(pollInterval);
 		};
 	});
+
+	function toggleSound() {
+		soundEnabled = !soundEnabled;
+		if (soundEnabled) {
+			playTurnCallChime();
+		}
+	}
 
 	function getComplexityLabel(comp: string) {
 		switch (comp) {
@@ -67,13 +87,24 @@
 			</div>
 		</div>
 
-		<!-- Reloj Digital de Sala -->
-		<div class="text-right bg-white/[0.03] px-6 py-2.5 rounded-2xl border border-white/10">
-			<div class="font-mono text-3xl sm:text-4xl font-black text-transparent bg-clip-text bg-gradient-to-r from-indigo-300 via-white to-sky-300 tracking-tight">
-				{currentTime}
-			</div>
-			<div class="text-xs text-slate-400 uppercase tracking-widest font-semibold mt-0.5">
-				{currentDate}
+		<!-- Reloj Digital de Sala y Botón de Sonido -->
+		<div class="flex items-center gap-3">
+			<button
+				type="button"
+				onclick={toggleSound}
+				class="px-3.5 py-2.5 rounded-2xl border text-xs font-bold transition-all flex items-center gap-2 {soundEnabled ? 'bg-indigo-500/15 border-indigo-500/30 text-indigo-300 hover:bg-indigo-500/25' : 'bg-white/5 border-white/10 text-slate-400 hover:bg-white/10'}"
+				title="Activar o silenciar avisos sonoros de turno"
+			>
+				<span>{soundEnabled ? '🔊 Sonido Activado' : '🔇 Silenciado'}</span>
+			</button>
+
+			<div class="text-right bg-white/[0.03] px-6 py-2.5 rounded-2xl border border-white/10">
+				<div class="font-mono text-3xl sm:text-4xl font-black text-transparent bg-clip-text bg-gradient-to-r from-indigo-300 via-white to-sky-300 tracking-tight">
+					{currentTime}
+				</div>
+				<div class="text-xs text-slate-400 uppercase tracking-widest font-semibold mt-0.5">
+					{currentDate}
+				</div>
 			</div>
 		</div>
 	</header>

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
 	import { onMount } from 'svelte';
+	import { playTurnCallChime, playSuccessJoy } from '$lib/audio';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
@@ -150,7 +151,16 @@
 					<!-- ACCIONES DEL AGENTE: RE-LLAMAR, RETORNAR, DAR SALIDA -->
 					<div class="pt-6 border-t border-white/10 flex flex-wrap items-center justify-between gap-3">
 						<!-- Re-llamar -->
-						<form method="POST" action="?/recall" use:enhance>
+						<form
+							method="POST"
+							action="?/recall"
+							use:enhance={() => {
+								playTurnCallChime();
+								return async ({ update }) => {
+									await update();
+								};
+							}}
+						>
 							<input type="hidden" name="ticketId" value={currentTicket.id} />
 							<button
 								type="submit"
@@ -209,7 +219,16 @@
 					</p>
 
 					{#if data.waitingTickets.length > 0}
-						<form method="POST" action="?/callNext" use:enhance>
+						<form
+							method="POST"
+							action="?/callNext"
+							use:enhance={() => {
+								playTurnCallChime();
+								return async ({ update }) => {
+									await update();
+								};
+							}}
+						>
 							<button
 								type="submit"
 								class="inline-flex items-center gap-3 bg-gradient-to-r from-indigo-500 via-indigo-600 to-sky-500 hover:from-indigo-600 hover:to-sky-600 text-white font-black text-sm sm:text-base px-8 py-4 rounded-2xl shadow-2xl shadow-indigo-500/30 border border-white/20 transition-all hover:scale-105 active:scale-95"
@@ -382,6 +401,7 @@
 				method="POST"
 				action="?/complete"
 				use:enhance={() => {
+					playSuccessJoy();
 					return async ({ update }) => {
 						await update();
 						showCompleteModal = false;
